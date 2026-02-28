@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Color Picker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    /* ── Color Wheel ── */
+    .wheel-wrap {
+      position: relative;
+      width: 280px;
+      height: 280px;
+      margin: 0 auto;
+      cursor: crosshair;
+    }
+
+    #colorWheel {
+      border-radius: 50%;
+      display: block;
+      width: 280px;
+      height: 280px;
+    }
+
+    #wheelCursor {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 3px solid #fff;
+      box-shadow: 0 0 0 1px #000, 0 2px 6px rgba(0,0,0,.5);
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      top: 50%;
+      left: 50%;
+    }
+
+    /* ── Brightness Slider ── */
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+    }
+
+    .slider-label {
+      font-size: .75rem;
+      color: #aaa;
+      min-width: 68px;
+    }
+
+    input[type=range] {
+      -webkit-appearance: none;
+      flex: 1;
+      height: 10px;
+      border-radius: 5px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    }
+
+    /* ── Preview ── */
+    .preview-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    #colorPreview {
+      width: 64px;
+      height: 64px;
+      border-radius: 12px;
+      border: 2px solid rgba(255,255,255,.15);
+      box-shadow: 0 4px 16px rgba(0,0,0,.4);
+      flex-shrink: 0;
+      background: #ff0000;
+    }
+
+    .formats {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: .45rem;
+    }
+
+    .format-row {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      background: rgba(255,255,255,.06);
+      border-radius: 8px;
+      padding: .35rem .6rem;
+    }
+
+    .format-label {
+      font-size: .65rem;
+      font-weight: 700;
+      color: #888;
+      min-width: 28px;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .format-value {
+      flex: 1;
+      font-size: .8rem;
+      font-family: monospace;
+      color: #e8e8e8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .copy-btn {
+      background: rgba(255,255,255,.1);
+      border: none;
+      color: #ccc;
+      border-radius: 5px;
+      padding: .2rem .45rem;
+      font-size: .7rem;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+      white-space: nowrap;
+    }
+
+    .copy-btn:hover { background: rgba(255,255,255,.2); color: #fff; }
+    .copy-btn.copied { background: #22c55e; color: #fff; }
+
+    /* ── History ── */
+    .section-title {
+      font-size: .7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: #666;
+      margin-bottom: .5rem;
+    }
+
+    .history-row {
+      display: flex;
+      gap: .6rem;
+      flex-wrap: wrap;
+    }
+
+    .swatch {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      cursor: pointer;
+      border: 2px solid rgba(255,255,255,.12);
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      transition: transform .12s, border-color .12s;
+      flex-shrink: 0;
+    }
+
+    .swatch:hover {
+      transform: scale(1.1);
+      border-color: rgba(255,255,255,.4);
+    }
+
+    .swatch.empty {
+      background: rgba(255,255,255,.05) !important;
+      cursor: default;
+      border-style: dashed;
+    }
+
+    .swatch.empty:hover { transform: none; border-color: rgba(255,255,255,.12); }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: 1.5rem;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #22c55e;
+      color: #fff;
+      padding: .55rem 1.2rem;
+      border-radius: 8px;
+      font-size: .85rem;
+      font-weight: 600;
+      transition: transform .25s ease;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #toast.show { transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <h1>Color Picker</h1>
+
+  <div class="container">
+
+    <!-- Color Wheel -->
+    <div class="wheel-wrap" id="wheelWrap">
+      <canvas id="colorWheel" width="280" height="280"></canvas>
+      <div id="wheelCursor"></div>
+    </div>
+
+    <!-- Brightness slider -->
+    <div class="slider-row">
+      <span class="slider-label">Brightness</span>
+      <input type="range" id="brightnessSlider" min="0" max="100" value="100" />
+    </div>
+
+    <!-- Preview + formats -->
+    <div class="preview-row">
+      <div id="colorPreview"></div>
+      <div class="formats">
+        <div class="format-row">
+          <span class="format-label">HEX</span>
+          <span class="format-value" id="hexVal">#ff0000</span>
+          <button class="copy-btn" data-target="hexVal">Copy</button>
+        </div>
+        <div class="format-row">
+          <span class="format-label">RGB</span>
+          <span class="format-value" id="rgbVal">rgb(255, 0, 0)</span>
+          <button class="copy-btn" data-target="rgbVal">Copy</button>
+        </div>
+        <div class="format-row">
+          <span class="format-label">HSL</span>
+          <span class="format-value" id="hslVal">hsl(0, 100%, 50%)</span>
+          <button class="copy-btn" data-target="hslVal">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div>
+      <div class="section-title">Recent colors</div>
+      <div class="history-row" id="historyRow">
+        <!-- swatches rendered by JS -->
+      </div>
+    </div>
+
+  </div>
+
+  <div id="toast">Copied!</div>
+
+  <script>
+    /* ────────────────────────────────────────────
+       State
+    ──────────────────────────────────────────── */
+    const MAX_HISTORY = 5;
+    let history = [];           // array of {r,g,b}
+    let pickedHSV = { h: 0, s: 1, v: 1 };  // current pick in HSV
+
+    /* ────────────────────────────────────────────
+       DOM refs
+    ──────────────────────────────────────────── */
+    const canvas     = document.getElementById('colorWheel');
+    const ctx        = canvas.getContext('2d');
+    const cursor     = document.getElementById('wheelCursor');
+    const preview    = document.getElementById('colorPreview');
+    const hexVal     = document.getElementById('hexVal');
+    const rgbVal     = document.getElementById('rgbVal');
+    const hslVal     = document.getElementById('hslVal');
+    const brightness = document.getElementById('brightnessSlider');
+    const historyRow = document.getElementById('historyRow');
+    const toast      = document.getElementById('toast');
+
+    /* ────────────────────────────────────────────
+       Draw color wheel
+    ──────────────────────────────────────────── */
+    function drawWheel() {
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const radius = cx;
+
+      // Draw hue / saturation wheel
+      for (let angle = 0; angle < 360; angle++) {
+        const startAngle = (angle - 1) * Math.PI / 180;
+        const endAngle   = (angle + 1) * Math.PI / 180;
+
+        const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+        gradient.addColorStop(0, `hsla(${angle}, 0%, 100%, 1)`);
+        gradient.addColorStop(1, `hsla(${angle}, 100%, 50%, 1)`);
+
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, radius, startAngle, endAngle);
+        ctx.closePath();
+        ctx.fillStyle = gradient;
+        ctx.fill();
+      }
+
+      // Clip to circle
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    /* ────────────────────────────────────────────
+       Color conversions
+    ──────────────────────────────────────────── */
+    function hsvToRgb(h, s, v) {
+      const c = v * s;
+      const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+      const m = v - c;
+      let r = 0, g = 0, b = 0;
+      if      (h < 60)  { r = c; g = x; b = 0; }
+      else if (h < 120) { r = x; g = c; b = 0; }
+      else if (h < 180) { r = 0; g = c; b = x; }
+      else if (h < 240) { r = 0; g = x; b = c; }
+      else if (h < 300) { r = x; g = 0; b = c; }
+      else              { r = c; g = 0; b = x; }
+      return {
+        r: Math.round((r + m) * 255),
+        g: Math.round((g + m) * 255),
+        b: Math.round((b + m) * 255),
+      };
+    }
+
+    function rgbToHex(r, g, b) {
+      return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+    }
+
+    function rgbToHsl(r, g, b) {
+      r /= 255; g /= 255; b /= 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      let h, s;
+      const l = (max + min) / 2;
+      if (max === min) {
+        h = s = 0;
+      } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+          case g: h = ((b - r) / d + 2) / 6; break;
+          default: h = ((r - g) / d + 4) / 6;
+        }
+      }
+      return {
+        h: Math.round(h * 360),
+        s: Math.round(s * 100),
+        l: Math.round(l * 100),
+      };
+    }
+
+    /* ────────────────────────────────────────────
+       Wheel coordinate → HSV
+    ──────────────────────────────────────────── */
+    function coordToHSV(x, y) {
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const radius = cx;
+      if (dist > radius) return null;
+
+      let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (angle < 0) angle += 360;
+
+      const sat = dist / radius;
+      return { h: angle, s: sat };
+    }
+
+    /* ────────────────────────────────────────────
+       Update UI
+    ──────────────────────────────────────────── */
+    function updateUI() {
+      const v = brightness.value / 100;
+      const { r, g, b } = hsvToRgb(pickedHSV.h, pickedHSV.s, v);
+
+      const hex = rgbToHex(r, g, b);
+      const hsl = rgbToHsl(r, g, b);
+
+      preview.style.background = hex;
+      hexVal.textContent = hex;
+      rgbVal.textContent = `rgb(${r}, ${g}, ${b})`;
+      hslVal.textContent = `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`;
+
+      // Darken overlay on wheel based on brightness
+      canvas.style.filter = `brightness(${brightness.value}%)`;
+    }
+
+    /* ────────────────────────────────────────────
+       Place cursor on wheel
+    ──────────────────────────────────────────── */
+    function placeCursor(h, s) {
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const radius = cx;
+      const angle  = h * Math.PI / 180;
+      const dist   = s * radius;
+      cursor.style.left = `${cx + dist * Math.cos(angle)}px`;
+      cursor.style.top  = `${cy + dist * Math.sin(angle)}px`;
+    }
+
+    /* ────────────────────────────────────────────
+       Add to history
+    ──────────────────────────────────────────── */
+    function addToHistory(r, g, b) {
+      const hex = rgbToHex(r, g, b);
+      // Avoid duplicates at front
+      if (history.length && rgbToHex(history[0].r, history[0].g, history[0].b) === hex) return;
+      history.unshift({ r, g, b });
+      if (history.length > MAX_HISTORY) history.pop();
+      renderHistory();
+    }
+
+    function renderHistory() {
+      historyRow.innerHTML = '';
+      for (let i = 0; i < MAX_HISTORY; i++) {
+        const div = document.createElement('div');
+        div.className = 'swatch' + (i >= history.length ? ' empty' : '');
+        if (i < history.length) {
+          const { r, g, b } = history[i];
+          div.style.background = rgbToHex(r, g, b);
+          div.title = rgbToHex(r, g, b);
+          div.addEventListener('click', () => applyHistoryColor(r, g, b));
+        }
+        historyRow.appendChild(div);
+      }
+    }
+
+    function applyHistoryColor(r, g, b) {
+      const hsl = rgbToHsl(r, g, b);
+      // Reconstruct HSV from HSL for approximate wheel position
+      pickedHSV.h = hsl.h;
+      pickedHSV.s = hsl.s / 100;
+      brightness.value = hsl.l > 50 ? 100 : Math.round(hsl.l * 2);
+      placeCursor(pickedHSV.h, pickedHSV.s);
+      updateUI();
+    }
+
+    /* ────────────────────────────────────────────
+       Copy to clipboard
+    ──────────────────────────────────────────── */
+    function copyText(text, btn) {
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        showToast(text);
+        setTimeout(() => {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      }).catch(() => {
+        // Fallback for browsers without clipboard API
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast(text);
+      });
+    }
+
+    let toastTimer;
+    function showToast(msg) {
+      toast.textContent = `Copied: ${msg}`;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    /* ────────────────────────────────────────────
+       Event: wheel picking
+    ──────────────────────────────────────────── */
+    let isDragging = false;
+
+    function handlePick(e) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width  / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top)  * scaleY;
+
+      const hsv = coordToHSV(x, y);
+      if (!hsv) return;
+
+      pickedHSV.h = hsv.h;
+      pickedHSV.s = hsv.s;
+      placeCursor(pickedHSV.h, pickedHSV.s);
+      updateUI();
+    }
+
+    function handleRelease() {
+      if (isDragging) {
+        isDragging = false;
+        // Save to history on release
+        const v = brightness.value / 100;
+        const { r, g, b } = hsvToRgb(pickedHSV.h, pickedHSV.s, v);
+        addToHistory(r, g, b);
+      }
+    }
+
+    // Touch support
+    function touchCoords(e) {
+      const t = e.touches[0];
+      return { clientX: t.clientX, clientY: t.clientY };
+    }
+
+    canvas.addEventListener('mousedown', e => { isDragging = true; handlePick(e); });
+    document.addEventListener('mousemove', e => { if (isDragging) handlePick(e); });
+    document.addEventListener('mouseup', handleRelease);
+
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); isDragging = true; handlePick(touchCoords(e)); }, { passive: false });
+    document.addEventListener('touchmove', e => { e.preventDefault(); if (isDragging) handlePick(touchCoords(e)); }, { passive: false });
+    document.addEventListener('touchend', handleRelease);
+
+    /* ────────────────────────────────────────────
+       Event: brightness slider
+    ──────────────────────────────────────────── */
+    brightness.addEventListener('input', () => {
+      updateUI();
+    });
+
+    brightness.addEventListener('change', () => {
+      const v = brightness.value / 100;
+      const { r, g, b } = hsvToRgb(pickedHSV.h, pickedHSV.s, v);
+      addToHistory(r, g, b);
+    });
+
+    /* ────────────────────────────────────────────
+       Event: copy buttons
+    ──────────────────────────────────────────── */
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.dataset.target;
+        const text = document.getElementById(targetId).textContent;
+        copyText(text, btn);
+      });
+    });
+
+    /* ────────────────────────────────────────────
+       Style brightness slider track dynamically
+    ──────────────────────────────────────────── */
+    function updateSliderTrack() {
+      const pct = brightness.value + '%';
+      brightness.style.background =
+        `linear-gradient(to right, #444 0%, #fff ${pct}, #333 ${pct})`;
+    }
+    brightness.addEventListener('input', updateSliderTrack);
+
+    /* ────────────────────────────────────────────
+       Init
+    ──────────────────────────────────────────── */
+    drawWheel();
+    placeCursor(0, 1);   // Start at red (hue=0, full saturation)
+    updateUI();
+    updateSliderTrack();
+    renderHistory();
+  </script>
+</body>
+</html>
