@@ -309,11 +309,27 @@ ${BODY}
 - Follow ALL rules in AGENTS.md
 PROMPT
 
+  # Write a launcher script into the worktree
+  # Uses pipe to pass prompt via stdin — avoids shell argument length limits
+  # and special character escaping issues with large prompts
+  LAUNCHER_FILE="${WT_PATH}/.agent-launcher.sh"
   if [[ "$INTERACTIVE" == true ]]; then
-    echo "cd '${WT_PATH}' && unset CLAUDECODE && claude" > "${CMD_DIR}/${num}"
+    cat > "$LAUNCHER_FILE" <<LAUNCHER
+#!/usr/bin/env bash
+cd '${WT_PATH}'
+unset CLAUDECODE
+exec claude
+LAUNCHER
   else
-    echo "cd '${WT_PATH}' && unset CLAUDECODE && claude -p \"\$(cat .agent-prompt.md)\" --dangerously-skip-permissions --model ${MODEL} --max-budget-usd ${BUDGET}" > "${CMD_DIR}/${num}"
+    cat > "$LAUNCHER_FILE" <<LAUNCHER
+#!/usr/bin/env bash
+cd '${WT_PATH}'
+unset CLAUDECODE
+cat .agent-prompt.md | claude -p --dangerously-skip-permissions --model ${MODEL} --max-budget-usd ${BUDGET}
+LAUNCHER
   fi
+  chmod +x "$LAUNCHER_FILE"
+  echo "bash '${LAUNCHER_FILE}'" > "${CMD_DIR}/${num}"
 done
 
 # ─── Launch: iTerm2 Tab Mode ───────────────────────────────────────────
