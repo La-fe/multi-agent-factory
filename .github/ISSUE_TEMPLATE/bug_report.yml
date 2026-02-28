@@ -1,0 +1,84 @@
+name: Bug Report
+description: Report a bug — structured for both human and AI agent processing
+labels: ["bug"]
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > Tip: The more specific you are, the faster an AI agent can fix this.
+        > Include exact error messages, file paths, and reproduction steps.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence — what is broken?
+      placeholder: "GET /todos returns 500 when the store is empty"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Shortest deterministic path to trigger the bug.
+      placeholder: |
+        1. Start the server: `pnpm dev`
+        2. Send request: `curl http://localhost:3000/todos`
+        3. Observe 500 error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen if this bug didn't exist?
+      placeholder: "Should return `[]` with status 200"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include error messages.
+      placeholder: |
+        Returns 500 with:
+        TypeError: Cannot read properties of undefined (reading 'filter')
+            at listTodos (src/store.ts:42)
+    validations:
+      required: true
+
+  - type: textarea
+    id: files_hint
+    attributes:
+      label: Suspected files
+      description: Which source files are likely involved? (helps AI agents locate code faster)
+      placeholder: |
+        - src/store.ts (the listTodos function)
+        - src/app.ts (route handler)
+    validations:
+      required: false
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs / Screenshots
+      description: Paste relevant logs, stack traces, or screenshots.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Estimated scope
+      description: How big is this fix likely to be?
+      options:
+        - "Small (1 file, single function)"
+        - "Medium (2-3 files)"
+        - "Large (4+ files or architectural change)"
+    validations:
+      required: true

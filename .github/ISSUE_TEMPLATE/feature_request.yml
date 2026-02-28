@@ -1,0 +1,92 @@
+name: Feature Request
+description: Propose a new feature — structured for AI agent implementation
+labels: ["enhancement"]
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > Tip: Be specific about the desired API/behavior.
+        > AI agents work best with concrete requirements, not vague ideas.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence — what capability should be added?
+      placeholder: "Add a GET /tags endpoint that returns all unique tags across todos"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user pain does this address? Why is the current behavior insufficient?
+      placeholder: "Users cannot filter todos by tags without knowing which tags exist"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: |
+        Describe the desired behavior as specifically as possible.
+        Include API shape, response format, edge cases.
+      placeholder: |
+        - `GET /tags` returns `{ "tags": ["work", "personal", "urgent"] }`
+        - Tags are extracted from all todos' `tags` field
+        - Returns `{ "tags": [] }` if no todos have tags
+        - Case-insensitive deduplication
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to create / modify
+      description: List the files this feature will touch (helps agents scope their work).
+      placeholder: |
+        - CREATE: `src/tags.ts` (route handler)
+        - CREATE: `src/tags.test.ts` (tests)
+        - MODIFY: `src/app.ts` (register route)
+        - MODIFY: `src/store.ts` (add getTags helper, if needed)
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How do we know this is done? List checkboxes.
+      placeholder: |
+        - [ ] Endpoint returns correct JSON shape
+        - [ ] Empty case handled (no tags → empty array)
+        - [ ] Tests cover happy path + edge cases
+        - [ ] `pnpm check && pnpm test` passes
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Estimated scope
+      description: How big is this feature?
+      options:
+        - "Small (1-2 files, can be done in one PR)"
+        - "Medium (3-5 files, single agent)"
+        - "Large (5+ files, should be decomposed into parallel tasks)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: parallelizable
+    attributes:
+      label: Can this be parallelized?
+      description: Can this feature be split into independent sub-tasks for multiple agents?
+      options:
+        - "No — must be done in one PR"
+        - "Yes — can be split (describe sub-tasks in the solution section)"
+    validations:
+      required: true

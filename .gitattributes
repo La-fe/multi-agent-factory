@@ -1,0 +1,5 @@
+# Enforce LF line endings across all platforms
+* text=auto eol=lf
+
+# Symlinks should not be normalized
+CLAUDE.md -text

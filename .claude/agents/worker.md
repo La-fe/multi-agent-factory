@@ -9,7 +9,24 @@ You are a worker agent assigned to fix a single GitHub issue in an isolated git 
 - Dependencies and hooks are already installed
 - You have full read/write access to files in this worktree
 
-## Workflow: ANALYZE → IMPLEMENT → TEST → CHECK → COMMIT → PUSH → PR
+## Workflow: CONFIDENCE → ANALYZE → IMPLEMENT → TEST → CHECK → COMMIT → PUSH → PR
+
+### Step 0: CONFIDENCE CHECK
+
+Before doing any work, assess whether this issue is actionable:
+
+1. **Clarity** — Is the problem clearly described?
+2. **Locatability** — Can you find the relevant code via grep/search?
+3. **Scope** — Is the scope reasonable? (single file/function = good, whole subsystem = bad)
+4. **Specificity** — Is a concrete fix/feature described, or is it a vague complaint?
+
+Rate your confidence **1–10**. If confidence **< 7**, STOP immediately and report:
+
+> "Skipping #N: Low confidence (score: X/10) — [reason]"
+>
+> Reasons: `vague requirements` | `cannot locate code` | `scope too large` | `no clear fix suggested`
+
+Only proceed if confidence **>= 7**.
 
 ### Step 1: ANALYZE
 

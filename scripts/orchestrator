@@ -44,6 +44,32 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# ─── Branch Naming ──────────────────────────────────────────────────────
+
+declare -A BRANCH_MAP  # issue_num -> branch_name
+
+# Determine branch prefix from issue labels
+branch_for_issue() {
+  local issue_num="$1"
+  local labels="$2"  # comma-separated label names
+
+  local prefix="fix"
+  if echo "$labels" | grep -qi "enhancement\|feature\|feat"; then
+    prefix="feat"
+  elif echo "$labels" | grep -qi "refactor"; then
+    prefix="refactor"
+  elif echo "$labels" | grep -qi "docs\|documentation"; then
+    prefix="docs"
+  elif echo "$labels" | grep -qi "test"; then
+    prefix="test"
+  elif echo "$labels" | grep -qi "chore"; then
+    prefix="chore"
+  fi
+  # bug / default → fix
+
+  echo "${prefix}/issue-${issue_num}"
+}
+
 # ─── Cleanup Trap ───────────────────────────────────────────────────────
 
 SPAWNED_PIDS=()
@@ -256,7 +282,9 @@ PROCESS_ISSUES='[]'
 for i in $(seq 0 $((ISSUE_COUNT - 1))); do
   ISSUE_NUM=$(echo "$ISSUES_JSON" | jq -r ".[$i].number")
   ISSUE_TITLE=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
-  BRANCH_NAME="fix/issue-${ISSUE_NUM}"
+  ISSUE_LABELS=$(echo "$ISSUES_JSON" | jq -r ".[$i].labels | map(.name) | join(\",\")")
+  BRANCH_NAME=$(branch_for_issue "$ISSUE_NUM" "$ISSUE_LABELS")
+  BRANCH_MAP["$ISSUE_NUM"]="$BRANCH_NAME"
 
   # Check if branch already exists
   if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}" 2>/dev/null; then
@@ -353,7 +381,7 @@ spawn_agent() {
   local issue_num="$1"
   local issue_title="$2"
   local issue_body="$3"
-  local branch_name="fix/issue-${issue_num}"
+  local branch_name="${BRANCH_MAP[$issue_num]:-fix/issue-${issue_num}}"
   local worktree_path="${WORKTREE_DIR}/${branch_name}"
   local result_file="${RESULTS_DIR}/issue-${issue_num}.json"
 
@@ -491,9 +519,10 @@ echo ""
 echo -e "${BLUE}→ Cleaning up worktrees...${NC}"
 for wt in "${CREATED_WORKTREES[@]+"${CREATED_WORKTREES[@]}"}"; do
   if [[ -d "$wt" ]]; then
-    BRANCH=$(basename "$wt")
+    # Get the branch name from the worktree's git HEAD
+    WT_BRANCH=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || basename "$wt")
     # Check if PR was created for this worktree's branch
-    PR_EXISTS=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "fix/$BRANCH" --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    PR_EXISTS=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "$WT_BRANCH" --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
     if [[ "$PR_EXISTS" -gt 0 ]]; then
       git worktree remove --force "$wt" 2>/dev/null || true
       echo -e "  ${GREEN}✓ Removed worktree: $wt (PR created)${NC}"
@@ -511,7 +540,7 @@ echo ""
 echo -e "${BLUE}→ Created PRs:${NC}"
 for entry in "${RESULTS[@]+"${RESULTS[@]}"}"; do
   IFS=':' read -r issue_num pid result_file <<< "$entry"
-  BRANCH_NAME="fix/issue-${issue_num}"
+  BRANCH_NAME="${BRANCH_MAP[$issue_num]:-fix/issue-${issue_num}}"
   PR_INFO=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "$BRANCH_NAME" --json number,url 2>/dev/null || echo '[]')
   PR_COUNT=$(echo "$PR_INFO" | jq 'length')
   if [[ "$PR_COUNT" -gt 0 ]]; then
