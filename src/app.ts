@@ -7,12 +7,16 @@ import {
   updateTodo,
 } from "./store.js";
 import { healthCheck } from "./health.js";
+import { getStats } from "./stats.js";
 
 export const app: Express = express();
 app.use(express.json());
 
 // Health check
 app.get("/health", healthCheck);
+
+// Stats
+app.get("/stats", getStats);
 
 // List all todos
 app.get("/todos", (_req, res) => {
