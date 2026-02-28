@@ -148,7 +148,7 @@ PROMPT
 
   (
     cd "$REPO_ROOT"
-    unset CLAUDECODE
+    unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
     claude -p "$FULL_PROMPT" \
       --dangerously-skip-permissions \
       --model "$MODEL" \
@@ -213,8 +213,16 @@ if [[ "$AUTO_MERGE" == true && ${#READY_PRS[@]} -gt 0 ]]; then
   for pr_num in "${READY_PRS[@]}"; do
     echo -e "  ${CYAN}Merging PR #${pr_num}...${NC}"
 
-    if gh pr merge "$pr_num" --squash --delete-branch 2>/dev/null; then
+    if gh pr merge "$pr_num" --squash 2>/dev/null; then
       echo -e "  ${GREEN}✓ PR #${pr_num} merged${NC}"
+      # Clean up remote branch (local branch may be held by worktree)
+      PR_BRANCH=$(echo "$PRS_JSON" | jq -r ".[] | select(.number == ${pr_num}) | .headRefName")
+      git push origin --delete "$PR_BRANCH" 2>/dev/null || true
+      # Transition linked issue label: status:review → status:done
+      LINKED_ISSUE=$(gh pr view "$pr_num" --json body --jq '.body' 2>/dev/null | grep -oiE '(fixes|closes|resolves) #[0-9]+' | grep -oE '[0-9]+' | head -1)
+      if [[ -n "$LINKED_ISSUE" ]]; then
+        gh issue edit "$LINKED_ISSUE" --remove-label "status:review" --add-label "status:done" 2>/dev/null || true
+      fi
     else
       echo -e "  ${RED}✗ PR #${pr_num} merge failed${NC}"
     fi
@@ -281,7 +289,7 @@ FIX_PROMPT_EOF
 
     (
       cd "$REPO_ROOT"
-      unset CLAUDECODE
+      unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
       claude -p "$FIX_PROMPT" \
         --dangerously-skip-permissions \
         --model "$MODEL" \

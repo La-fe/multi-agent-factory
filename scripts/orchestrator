@@ -63,14 +63,29 @@ branch_map_get() {
   if [[ -n "$result" ]]; then
     echo "$result"
   else
-    echo "fix/issue-${num}"
+    echo "fix/agent-${num}"
   fi
+}
+
+# Generate a short slug from issue title
+# e.g. "[Feature]: Add BMI calculator page" → "add-bmi-calculator-page"
+title_to_slug() {
+  local title="$1"
+  echo "$title" \
+    | sed -E 's/^\[(Bug|Feature|Feat|Fix|Refactor|Docs|Chore)\]:? *//i' \
+    | sed -E 's/^(feat|fix|refactor|docs|test|chore)(\([^)]*\))?:? *//i' \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -cs 'a-z0-9' '-' \
+    | sed 's/^-//;s/-$//' \
+    | cut -c1-40 \
+    | sed 's/-$//'
 }
 
 # Determine branch prefix from issue labels
 branch_for_issue() {
   local issue_num="$1"
   local labels="$2"  # comma-separated label names
+  local title="${3:-}"
 
   local prefix="fix"
   if echo "$labels" | grep -qi "enhancement\|feature\|feat"; then
@@ -86,7 +101,16 @@ branch_for_issue() {
   fi
   # bug / default → fix
 
-  echo "${prefix}/issue-${issue_num}"
+  local slug=""
+  if [[ -n "$title" ]]; then
+    slug=$(title_to_slug "$title")
+  fi
+
+  if [[ -n "$slug" ]]; then
+    echo "${prefix}/agent-${issue_num}-${slug}"
+  else
+    echo "${prefix}/agent-${issue_num}"
+  fi
 }
 
 # ─── Cleanup Trap ───────────────────────────────────────────────────────
@@ -305,7 +329,7 @@ for i in $(seq 0 $((ISSUE_COUNT - 1))); do
   ISSUE_NUM=$(echo "$ISSUES_JSON" | jq -r ".[$i].number")
   ISSUE_TITLE=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
   ISSUE_LABELS=$(echo "$ISSUES_JSON" | jq -r ".[$i].labels | map(.name) | join(\",\")")
-  BRANCH_NAME=$(branch_for_issue "$ISSUE_NUM" "$ISSUE_LABELS")
+  BRANCH_NAME=$(branch_for_issue "$ISSUE_NUM" "$ISSUE_LABELS" "$ISSUE_TITLE")
   branch_map_set "$ISSUE_NUM" "$BRANCH_NAME"
 
   # Check if branch already exists
@@ -416,6 +440,10 @@ spawn_agent() {
     return 1
   fi
 
+  # Transition label: status:ready → status:in-progress
+  gh issue edit "$issue_num" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} \
+    --remove-label "status:ready" --add-label "status:in-progress" 2>/dev/null || true
+
   # Create worktree
   echo -e "  ${CYAN}⚙ #${issue_num}: Creating worktree...${NC}"
   if ! bash "${REPO_ROOT}/scripts/create-worktree" "$branch_name" "$BASE_BRANCH" >/dev/null 2>&1; then
@@ -453,7 +481,7 @@ PROMPT
 
   (
     cd "$worktree_path"
-    unset CLAUDECODE
+    unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
     claude -p "$full_prompt" \
       --dangerously-skip-permissions \
       --model "$MODEL" \
@@ -571,6 +599,9 @@ for entry in "${RESULTS[@]+"${RESULTS[@]}"}"; do
   if [[ "$PR_COUNT" -gt 0 ]]; then
     PR_URL=$(echo "$PR_INFO" | jq -r '.[0].url')
     echo -e "  ${GREEN}PR for #${issue_num}: ${PR_URL}${NC}"
+    # Transition label: status:in-progress → status:review
+    gh issue edit "$issue_num" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} \
+      --remove-label "status:in-progress" --add-label "status:review" 2>/dev/null || true
   fi
 done
 

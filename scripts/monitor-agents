@@ -171,9 +171,10 @@ scan_agents() {
   fi
   echo ""
 
-  # Get all panes in the session
+  # Get all panes across ALL windows in the session (-s flag)
+  # Format: window_index.pane_index : window_name
   local panes
-  panes=$(tmux list-panes -t "$TMUX_SESSION" -F '#{pane_index}:#{pane_title}' 2>/dev/null || echo "")
+  panes=$(tmux list-panes -s -t "$TMUX_SESSION" -F '#{window_index}.#{pane_index}:#{window_name}' 2>/dev/null || echo "")
 
   if [[ -z "$panes" ]]; then
     echo -e "${YELLOW}No panes found in session '${TMUX_SESSION}'${NC}"
@@ -186,9 +187,9 @@ scan_agents() {
   local waiting_count=0
   local working_count=0
 
-  while IFS=':' read -r pane_idx pane_title; do
+  while IFS=':' read -r pane_addr pane_title; do
     total=$((total + 1))
-    local pane_ref="${TMUX_SESSION}:0.${pane_idx}"
+    local pane_ref="${TMUX_SESSION}:${pane_addr}"
 
     # Capture pane output
     local output
@@ -206,7 +207,7 @@ scan_agents() {
     esac
 
     # Display
-    local label="${pane_title:-Pane ${pane_idx}}"
+    local label="${pane_title:-Pane ${pane_addr}}"
     echo -e "┌─ ${BOLD}${label}${NC}  $(status_icon "$status")"
 
     # Show last few lines of output (dimmed)
