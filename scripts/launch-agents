@@ -273,7 +273,9 @@ done
 
 WORKER_PROMPT_BASE=""
 if [[ -f "$WORKER_PROMPT_FILE" ]]; then
-  WORKER_PROMPT_BASE=$(cat "$WORKER_PROMPT_FILE")
+  # Strip YAML frontmatter (--- ... ---) to prevent claude -p from
+  # interpreting leading '---' as a command-line flag
+  WORKER_PROMPT_BASE=$(sed '/^---$/,/^---$/d' "$WORKER_PROMPT_FILE")
 fi
 
 # Store commands in temp files (one per issue, bash 3 compatible)
