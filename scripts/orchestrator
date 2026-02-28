@@ -14,6 +14,7 @@ set -euo pipefail
 # Requires: gh, jq, claude CLI
 # ────────────────────────────────────────────────────────────────────────
 
+ORIGINAL_ARGS=("$@")
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 WORKTREE_DIR="${REPO_ROOT}/.worktrees"
 CLAIMS_FILE="${REPO_ROOT}/.claude/claims.json"
@@ -53,7 +54,7 @@ cleanup() {
   echo -e "${YELLOW}→ Cleaning up...${NC}"
 
   # Kill any running agent processes
-  for pid in "${SPAWNED_PIDS[@]}"; do
+  for pid in "${SPAWNED_PIDS[@]+"${SPAWNED_PIDS[@]}"}"; do
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -62,7 +63,7 @@ cleanup() {
   done
 
   # Remove worktrees
-  for wt in "${CREATED_WORKTREES[@]}"; do
+  for wt in "${CREATED_WORKTREES[@]+"${CREATED_WORKTREES[@]}"}"; do
     if [[ -d "$wt" ]]; then
       git worktree remove --force "$wt" 2>/dev/null || true
       echo "  Removed worktree: $wt"
@@ -152,7 +153,7 @@ fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo -e "${YELLOW}WARNING: Working tree has uncommitted changes${NC}"
   echo "  Agents use isolated worktrees, but a clean state is recommended."
-  if [[ "$AUTO_YES" != true ]]; then
+  if [[ "$AUTO_YES" != true && "$DRY_RUN" != true ]]; then
     read -rp "  Continue anyway? [y/N] " response
     if [[ "$response" != "y" && "$response" != "Y" ]]; then
       exit 0
@@ -178,7 +179,7 @@ fi
 
 echo -e "${BLUE}→ Phase 1: Fetching issues (label: ${LABEL}, limit: ${LIMIT})${NC}"
 
-ISSUES_JSON=$(gh issue list "${REPO_FLAG[@]}" \
+ISSUES_JSON=$(gh issue list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} \
   --state open \
   --label "$LABEL" \
   --limit "$LIMIT" \
@@ -265,7 +266,7 @@ for i in $(seq 0 $((ISSUE_COUNT - 1))); do
   fi
 
   # Check if PR already exists for this issue
-  EXISTING_PR=$(gh pr list "${REPO_FLAG[@]}" --state open --head "$BRANCH_NAME" --json number 2>/dev/null | jq 'length')
+  EXISTING_PR=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "$BRANCH_NAME" --json number 2>/dev/null | jq 'length')
   if [[ "$EXISTING_PR" -gt 0 ]]; then
     echo -e "  ${YELLOW}⊘ #${ISSUE_NUM}: PR already exists for branch '${BRANCH_NAME}' — skipping${NC}"
     SKIP_ISSUES=$(echo "$SKIP_ISSUES" | jq --argjson n "$ISSUE_NUM" '. + [$n]')
@@ -440,7 +441,7 @@ echo ""
 echo -e "${BLUE}→ Phase 4: Waiting for agents to complete...${NC}"
 
 # Wait for all agents
-for pid in "${SPAWNED_PIDS[@]}"; do
+for pid in "${SPAWNED_PIDS[@]+"${SPAWNED_PIDS[@]}"}"; do
   wait "$pid" 2>/dev/null || true
 done
 
@@ -455,7 +456,7 @@ echo "┌──────┬────────┬───────�
 printf "│ %-4s │ %-6s │ %-48s │\n" "#" "Status" "Details"
 echo "├──────┼────────┼──────────────────────────────────────────────────┤"
 
-for entry in "${RESULTS[@]}"; do
+for entry in "${RESULTS[@]+"${RESULTS[@]}"}"; do
   IFS=':' read -r issue_num pid result_file <<< "$entry"
 
   if [[ -f "$result_file" ]]; then
@@ -487,11 +488,11 @@ echo -e "${BOLD}Summary: ${GREEN}${SUCCESS} succeeded${NC}, ${RED}${FAILURE} fai
 # Clean up worktrees (only successful ones; keep failed for debugging)
 echo ""
 echo -e "${BLUE}→ Cleaning up worktrees...${NC}"
-for wt in "${CREATED_WORKTREES[@]}"; do
+for wt in "${CREATED_WORKTREES[@]+"${CREATED_WORKTREES[@]}"}"; do
   if [[ -d "$wt" ]]; then
     BRANCH=$(basename "$wt")
     # Check if PR was created for this worktree's branch
-    PR_EXISTS=$(gh pr list "${REPO_FLAG[@]}" --state open --head "fix/$BRANCH" --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    PR_EXISTS=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "fix/$BRANCH" --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
     if [[ "$PR_EXISTS" -gt 0 ]]; then
       git worktree remove --force "$wt" 2>/dev/null || true
       echo -e "  ${GREEN}✓ Removed worktree: $wt (PR created)${NC}"
@@ -507,10 +508,10 @@ CREATED_WORKTREES=()
 # Check for created PRs
 echo ""
 echo -e "${BLUE}→ Created PRs:${NC}"
-for entry in "${RESULTS[@]}"; do
+for entry in "${RESULTS[@]+"${RESULTS[@]}"}"; do
   IFS=':' read -r issue_num pid result_file <<< "$entry"
   BRANCH_NAME="fix/issue-${issue_num}"
-  PR_INFO=$(gh pr list "${REPO_FLAG[@]}" --state open --head "$BRANCH_NAME" --json number,url 2>/dev/null || echo '[]')
+  PR_INFO=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "$BRANCH_NAME" --json number,url 2>/dev/null || echo '[]')
   PR_COUNT=$(echo "$PR_INFO" | jq 'length')
   if [[ "$PR_COUNT" -gt 0 ]]; then
     PR_URL=$(echo "$PR_INFO" | jq -r '.[0].url')
@@ -527,5 +528,5 @@ if [[ "$WATCH" == true ]]; then
   echo -e "${CYAN}Watch mode: sleeping ${WATCH_INTERVAL}s before next run...${NC}"
   echo "  Press Ctrl-C to stop."
   sleep "$WATCH_INTERVAL"
-  exec "$0" "${ORIGINAL_ARGS[@]:-}"
+  exec "$0" "${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}"
 fi
