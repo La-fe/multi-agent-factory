@@ -8,6 +8,13 @@ beforeEach(() => {
 });
 
 describe("API", () => {
+  describe("GET /favicon.ico", () => {
+    it("returns 204 silently", async () => {
+      const res = await request(app).get("/favicon.ico");
+      expect(res.status).toBe(204);
+    });
+  });
+
   describe("POST /todos", () => {
     it("creates a todo", async () => {
       const res = await request(app).post("/todos").send({ title: "Buy milk" });
