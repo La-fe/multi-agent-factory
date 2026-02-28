@@ -22,6 +22,11 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 WORKTREE_DIR="${REPO_ROOT}/.worktrees"
 WORKER_PROMPT_FILE="${REPO_ROOT}/.claude/agents/worker.md"
 
+# Temp file for issue data (bash 3 compatible — no associative arrays)
+ISSUE_DB=$(mktemp)
+echo '[]' > "$ISSUE_DB"
+trap 'rm -f "$ISSUE_DB"' EXIT
+
 # ─── Defaults ───────────────────────────────────────────────────────────
 
 MODE="tab"           # tab | split | tmux
@@ -44,6 +49,42 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
+
+# ─── Helpers ────────────────────────────────────────────────────────────
+
+# Get a field from the issue DB by issue number
+iget() {
+  local num="$1" field="$2"
+  jq -r --argjson n "$num" '.[] | select(.num == $n) | .'"$field" "$ISSUE_DB"
+}
+
+# Add an issue to the DB
+iadd() {
+  local num="$1" title="$2" body="$3" branch="$4"
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson n "$num" --arg t "$title" --arg b "$body" --arg br "$branch" \
+    '. + [{num: $n, title: $t, body: $b, branch: $br}]' "$ISSUE_DB" > "$tmp" \
+    && mv "$tmp" "$ISSUE_DB"
+}
+
+branch_for_issue() {
+  local issue_num="$1"
+  local labels="$2"
+  local prefix="fix"
+  if echo "$labels" | grep -qi "enhancement\|feature\|feat"; then
+    prefix="feat"
+  elif echo "$labels" | grep -qi "refactor"; then
+    prefix="refactor"
+  elif echo "$labels" | grep -qi "docs\|documentation"; then
+    prefix="docs"
+  elif echo "$labels" | grep -qi "test"; then
+    prefix="test"
+  elif echo "$labels" | grep -qi "chore"; then
+    prefix="chore"
+  fi
+  echo "${prefix}/issue-${issue_num}"
+}
 
 # ─── Usage ──────────────────────────────────────────────────────────────
 
@@ -142,36 +183,10 @@ if [[ "$MODE" == "tmux" ]]; then
   fi
 fi
 
-# ─── Branch Naming ──────────────────────────────────────────────────────
-
-branch_for_issue() {
-  local issue_num="$1"
-  local labels="$2"
-
-  local prefix="fix"
-  if echo "$labels" | grep -qi "enhancement\|feature\|feat"; then
-    prefix="feat"
-  elif echo "$labels" | grep -qi "refactor"; then
-    prefix="refactor"
-  elif echo "$labels" | grep -qi "docs\|documentation"; then
-    prefix="docs"
-  elif echo "$labels" | grep -qi "test"; then
-    prefix="test"
-  elif echo "$labels" | grep -qi "chore"; then
-    prefix="chore"
-  fi
-
-  echo "${prefix}/issue-${issue_num}"
-}
-
 # ─── Fetch Issues ───────────────────────────────────────────────────────
 
 echo -e "${BOLD}═══ Visual Agent Launcher ═══${NC}"
 echo ""
-
-declare -A ISSUE_TITLES
-declare -A ISSUE_BODIES
-declare -A ISSUE_BRANCHES
 
 if [[ -n "$LABEL" ]]; then
   echo -e "${BLUE}→ Fetching issues (label: ${LABEL}, limit: ${LIMIT})${NC}"
@@ -187,11 +202,12 @@ if [[ -n "$LABEL" ]]; then
   ISSUES=()
   for i in $(seq 0 $((ISSUE_COUNT - 1))); do
     NUM=$(echo "$ISSUES_JSON" | jq -r ".[$i].number")
-    ISSUES+=("$NUM")
-    ISSUE_TITLES["$NUM"]=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
-    ISSUE_BODIES["$NUM"]=$(echo "$ISSUES_JSON" | jq -r ".[$i].body // \"No description.\"")
+    TITLE=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
+    BODY=$(echo "$ISSUES_JSON" | jq -r ".[$i].body // \"No description.\"")
     LABELS_STR=$(echo "$ISSUES_JSON" | jq -r ".[$i].labels | map(.name) | join(\",\")")
-    ISSUE_BRANCHES["$NUM"]=$(branch_for_issue "$NUM" "$LABELS_STR")
+    BRANCH=$(branch_for_issue "$NUM" "$LABELS_STR")
+    ISSUES+=("$NUM")
+    iadd "$NUM" "$TITLE" "$BODY" "$BRANCH"
   done
 else
   echo -e "${BLUE}→ Fetching issue details...${NC}"
@@ -201,10 +217,11 @@ else
       echo -e "${RED}ERROR: Issue #${num} not found${NC}" >&2
       exit 1
     fi
-    ISSUE_TITLES["$num"]=$(echo "$ISSUE_DATA" | jq -r '.title')
-    ISSUE_BODIES["$num"]=$(echo "$ISSUE_DATA" | jq -r '.body // "No description."')
+    TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+    BODY=$(echo "$ISSUE_DATA" | jq -r '.body // "No description."')
     LABELS_STR=$(echo "$ISSUE_DATA" | jq -r '.labels | map(.name) | join(",")')
-    ISSUE_BRANCHES["$num"]=$(branch_for_issue "$num" "$LABELS_STR")
+    BRANCH=$(branch_for_issue "$num" "$LABELS_STR")
+    iadd "$num" "$TITLE" "$BODY" "$BRANCH"
   done
 fi
 
@@ -216,10 +233,10 @@ echo "┌──────┬────────────────�
 printf "│ %-4s │ %-32s │ %-22s │\n" "#" "Title" "Branch"
 echo "├──────┼──────────────────────────────────┼────────────────────────┤"
 for num in "${ISSUES[@]}"; do
-  TITLE="${ISSUE_TITLES[$num]}"
-  BRANCH="${ISSUE_BRANCHES[$num]}"
-  [[ ${#TITLE} -gt 30 ]] && TITLE="${TITLE:0:27}..."
-  [[ ${#BRANCH} -gt 20 ]] && BRANCH="${BRANCH:0:17}..."
+  TITLE=$(iget "$num" "title")
+  BRANCH=$(iget "$num" "branch")
+  if [[ ${#TITLE} -gt 30 ]]; then TITLE="${TITLE:0:27}..."; fi
+  if [[ ${#BRANCH} -gt 20 ]]; then BRANCH="${BRANCH:0:17}..."; fi
   printf "│ %-4s │ %-32s │ %-22s │\n" "$num" "$TITLE" "$BRANCH"
 done
 echo "└──────┴──────────────────────────────────┴────────────────────────┘"
@@ -237,7 +254,7 @@ fi
 echo -e "${BLUE}→ Creating worktrees...${NC}"
 
 for num in "${ISSUES[@]}"; do
-  BRANCH="${ISSUE_BRANCHES[$num]}"
+  BRANCH=$(iget "$num" "branch")
   WT_PATH="${WORKTREE_DIR}/${BRANCH}"
 
   if [[ -d "$WT_PATH" ]]; then
@@ -259,15 +276,16 @@ if [[ -f "$WORKER_PROMPT_FILE" ]]; then
   WORKER_PROMPT_BASE=$(cat "$WORKER_PROMPT_FILE")
 fi
 
-declare -A AGENT_CMDS
+# Store commands in temp files (one per issue, bash 3 compatible)
+CMD_DIR=$(mktemp -d)
 
 for num in "${ISSUES[@]}"; do
-  BRANCH="${ISSUE_BRANCHES[$num]}"
+  BRANCH=$(iget "$num" "branch")
   WT_PATH="${WORKTREE_DIR}/${BRANCH}"
-  TITLE="${ISSUE_TITLES[$num]}"
-  BODY="${ISSUE_BODIES[$num]}"
+  TITLE=$(iget "$num" "title")
+  BODY=$(iget "$num" "body")
 
-  # Write the prompt to a temp file in the worktree (avoids shell escaping hell)
+  # Write the prompt to a file in the worktree
   PROMPT_FILE="${WT_PATH}/.agent-prompt.md"
   cat > "$PROMPT_FILE" <<PROMPT
 ${WORKER_PROMPT_BASE}
@@ -290,11 +308,9 @@ ${BODY}
 PROMPT
 
   if [[ "$INTERACTIVE" == true ]]; then
-    # Interactive mode — user chats with each agent
-    AGENT_CMDS["$num"]="cd '${WT_PATH}' && unset CLAUDECODE && claude"
+    echo "cd '${WT_PATH}' && unset CLAUDECODE && claude" > "${CMD_DIR}/${num}"
   else
-    # Headless mode — agent works autonomously
-    AGENT_CMDS["$num"]="cd '${WT_PATH}' && unset CLAUDECODE && claude -p \"\$(cat .agent-prompt.md)\" --dangerously-skip-permissions --model ${MODEL} --max-budget-usd ${BUDGET}"
+    echo "cd '${WT_PATH}' && unset CLAUDECODE && claude -p \"\$(cat .agent-prompt.md)\" --dangerously-skip-permissions --model ${MODEL} --max-budget-usd ${BUDGET}" > "${CMD_DIR}/${num}"
   fi
 done
 
@@ -304,20 +320,21 @@ launch_iterm_tabs() {
   local first=true
   local applescript=""
 
-  applescript+='tell application "iTerm2"
+  applescript='tell application "iTerm2"
   activate
   tell current window
 '
 
   for num in "${ISSUES[@]}"; do
-    local cmd="${AGENT_CMDS[$num]}"
+    local cmd
+    cmd=$(cat "${CMD_DIR}/${num}")
     local title="Agent #${num}"
     # Escape for AppleScript
     cmd="${cmd//\\/\\\\}"
     cmd="${cmd//\"/\\\"}"
 
     if [[ "$first" == true ]]; then
-      applescript+="
+      applescript="${applescript}
     tell current session
       set name to \"${title}\"
       write text \"${cmd}\"
@@ -325,7 +342,7 @@ launch_iterm_tabs() {
 "
       first=false
     else
-      applescript+="
+      applescript="${applescript}
     set newTab to (create tab with default profile)
     tell current session of newTab
       set name to \"${title}\"
@@ -335,9 +352,9 @@ launch_iterm_tabs() {
     fi
   done
 
-  applescript+='
+  applescript="${applescript}
   end tell
-end tell'
+end tell"
 
   osascript -e "$applescript"
 }
@@ -348,26 +365,27 @@ launch_iterm_splits() {
   local first=true
   local applescript=""
 
-  applescript+='tell application "iTerm2"
+  applescript='tell application "iTerm2"
   activate
   tell current window
     tell current session
 '
 
   for num in "${ISSUES[@]}"; do
-    local cmd="${AGENT_CMDS[$num]}"
+    local cmd
+    cmd=$(cat "${CMD_DIR}/${num}")
     local title="Agent #${num}"
     cmd="${cmd//\\/\\\\}"
     cmd="${cmd//\"/\\\"}"
 
     if [[ "$first" == true ]]; then
-      applescript+="
+      applescript="${applescript}
       set name to \"${title}\"
       write text \"${cmd}\"
 "
       first=false
     else
-      applescript+="
+      applescript="${applescript}
       set newPane to (split vertically with default profile)
       tell newPane
         set name to \"${title}\"
@@ -377,10 +395,10 @@ launch_iterm_splits() {
     fi
   done
 
-  applescript+='
+  applescript="${applescript}
     end tell
   end tell
-end tell'
+end tell"
 
   osascript -e "$applescript"
 }
@@ -394,7 +412,8 @@ launch_tmux() {
   local first=true
 
   for num in "${ISSUES[@]}"; do
-    local cmd="${AGENT_CMDS[$num]}"
+    local cmd
+    cmd=$(cat "${CMD_DIR}/${num}")
 
     if [[ "$first" == true ]]; then
       tmux new-session -d -s "$TMUX_SESSION" -n "agent-${num}"
@@ -440,6 +459,9 @@ case "$MODE" in
     ;;
 esac
 
+# Clean up command temp dir
+rm -rf "$CMD_DIR"
+
 if [[ "$MODE" != "tmux" ]]; then
   echo ""
   echo -e "${GREEN}✓ ${#ISSUES[@]} agent(s) launched in iTerm2 (${MODE} mode)${NC}"
@@ -452,7 +474,7 @@ if [[ "$MODE" != "tmux" ]]; then
   echo ""
   echo "  To clean up worktrees afterward:"
   for num in "${ISSUES[@]}"; do
-    BRANCH="${ISSUE_BRANCHES[$num]}"
+    BRANCH=$(iget "$num" "branch")
     echo "    git worktree remove .worktrees/${BRANCH}"
   done
 fi
