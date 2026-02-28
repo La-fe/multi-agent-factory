@@ -8,12 +8,16 @@ import {
 } from "./store.js";
 import { healthCheck } from "./health.js";
 import { getStats } from "./stats.js";
+import { getVersion } from "./version.js";
 
 export const app: Express = express();
 app.use(express.json());
 
 // Health check
 app.get("/health", healthCheck);
+
+// Version
+app.get("/version", getVersion);
 
 // Stats
 app.get("/stats", getStats);
