@@ -271,6 +271,38 @@ scripts/launch-agents --label "status:ready" --dry-run
 | Interaction | None (fully autonomous) | Optional (`--interactive`) |
 | Best for | CI, batch processing, 5+ issues | Learning, debugging, 2-4 issues |
 
+### Issue Label Lifecycle
+
+Labels drive the automated workflow. The orchestrator and launch-agents manage transitions automatically.
+
+```
+status:ready          Issue is queued for agent processing
+    ↓                 (orchestrator/launch-agents picks it up)
+status:in-progress    Agent is actively working on this issue
+    ↓                 (agent creates PR)
+status:review         PR created, awaiting review
+    ↓                 (review-prs --auto-merge merges it)
+status:done           Issue resolved, PR merged
+```
+
+**Label categories:**
+
+| Category | Labels | Applied by |
+|----------|--------|------------|
+| Status | `status:ready`, `status:in-progress`, `status:review`, `status:done` | Human / scripts |
+| Close reason | `close:duplicate`, `close:not-planned`, `close:stale` | Human / stale bot |
+| Area | `area:api`, `area:scripts`, `area:ci`, `area:agents`, `area:public` | Labeler workflow (path-based) |
+| Size | `size/XS`, `size/S`, `size/M`, `size/L`, `size/XL` | Auto-label workflow |
+| Utility | `no-stale`, `needs-decompose` | Human |
+
+**Branch naming** (auto-derived from issue labels + title):
+- `feat/agent-{N}-{slug}` — enhancement/feature labels
+- `fix/agent-{N}-{slug}` — bug labels
+- `refactor/agent-{N}-{slug}` — refactor labels
+- `docs/agent-{N}-{slug}` — docs labels
+
+The `agent-` prefix distinguishes AI-created branches from human-created ones (e.g. `feat/manual-feature`).
+
 ### Safety Mechanisms
 
 - **Worktree isolation**: Each agent works in its own directory, no cross-contamination
