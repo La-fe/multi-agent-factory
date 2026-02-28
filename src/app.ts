@@ -8,6 +8,7 @@ import {
 } from "./store.js";
 import { healthCheck } from "./health.js";
 import { getStats } from "./stats.js";
+import { getUptime } from "./uptime.js";
 
 export const app: Express = express();
 app.use(express.json());
@@ -17,6 +18,9 @@ app.get("/health", healthCheck);
 
 // Stats
 app.get("/stats", getStats);
+
+// Uptime
+app.get("/uptime", getUptime);
 
 // List all todos
 app.get("/todos", (_req, res) => {
