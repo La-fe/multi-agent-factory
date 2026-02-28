@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pomodoro Timer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --surface2: #0f3460;
+      --work-color: #e94560;
+      --break-color: #0fbcf9;
+      --text: #eaeaea;
+      --text-muted: #8892a4;
+      --btn-bg: #0f3460;
+      --btn-hover: #1a4a80;
+      --radius: 12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 2rem;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+
+    /* Mode badge */
+    #mode-badge {
+      font-size: 0.9rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 600;
+      padding: 0.3rem 1rem;
+      border-radius: 999px;
+      background: var(--work-color);
+      color: #fff;
+      transition: background 0.4s;
+    }
+    #mode-badge.break { background: var(--break-color); color: #1a1a2e; }
+
+    /* Circular progress */
+    .ring-wrapper {
+      position: relative;
+      width: 240px;
+      height: 240px;
+    }
+
+    .ring-wrapper svg {
+      transform: rotate(-90deg);
+    }
+
+    .ring-bg {
+      fill: none;
+      stroke: var(--surface2);
+      stroke-width: 12;
+    }
+
+    .ring-progress {
+      fill: none;
+      stroke: var(--work-color);
+      stroke-width: 12;
+      stroke-linecap: round;
+      transition: stroke-dashoffset 1s linear, stroke 0.4s;
+    }
+
+    .ring-progress.break { stroke: var(--break-color); }
+
+    .ring-time {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+    }
+
+    #time-display {
+      font-size: 3.5rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      letter-spacing: 0.05em;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      gap: 1rem;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: var(--radius);
+      padding: 0.7rem 1.6rem;
+      font-size: 1rem;
+      font-weight: 600;
+      background: var(--btn-bg);
+      color: var(--text);
+      transition: background 0.2s, transform 0.1s;
+      letter-spacing: 0.04em;
+    }
+
+    button:hover { background: var(--btn-hover); }
+    button:active { transform: scale(0.96); }
+
+    #btn-start { background: var(--work-color); color: #fff; }
+    #btn-start:hover { filter: brightness(1.15); }
+    #btn-start.break-mode { background: var(--break-color); color: #1a1a2e; }
+
+    /* Session counter */
+    .sessions {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 1rem 2rem;
+      text-align: center;
+    }
+
+    .sessions p {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 0.4rem;
+    }
+
+    .sessions .count {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--work-color);
+    }
+
+    /* Tomato dots */
+    .tomatoes {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .tomato {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--work-color);
+      opacity: 0.25;
+    }
+
+    .tomato.done { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <h1>🍅 Pomodoro</h1>
+
+  <span id="mode-badge">Work</span>
+
+  <div class="ring-wrapper">
+    <svg width="240" height="240" viewBox="0 0 240 240">
+      <circle class="ring-bg" cx="120" cy="120" r="104" />
+      <circle id="ring-arc" class="ring-progress" cx="120" cy="120" r="104" />
+    </svg>
+    <div class="ring-time">
+      <span id="time-display">25:00</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start">Start</button>
+    <button id="btn-reset">Reset</button>
+  </div>
+
+  <div class="sessions">
+    <p>Pomodoros completed</p>
+    <div class="count" id="session-count">0</div>
+    <div class="tomatoes" id="tomatoes"></div>
+  </div>
+
+  <script>
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const WORK_SECS  = 25 * 60;
+    const BREAK_SECS = 5  * 60;
+    const CIRCUMFERENCE = 2 * Math.PI * 104; // r=104
+
+    // ── State ──────────────────────────────────────────────────────────────────
+    let totalSecs   = WORK_SECS;
+    let remaining   = WORK_SECS;
+    let running     = false;
+    let isBreak     = false;
+    let sessions    = 0;
+    let intervalId  = null;
+
+    // ── DOM refs ───────────────────────────────────────────────────────────────
+    const timeEl    = document.getElementById('time-display');
+    const arc       = document.getElementById('ring-arc');
+    const badge     = document.getElementById('mode-badge');
+    const btnStart  = document.getElementById('btn-start');
+    const btnReset  = document.getElementById('btn-reset');
+    const countEl   = document.getElementById('session-count');
+    const tomatoBox = document.getElementById('tomatoes');
+
+    // ── Init arc ───────────────────────────────────────────────────────────────
+    arc.style.strokeDasharray  = CIRCUMFERENCE;
+    arc.style.strokeDashoffset = 0;
+
+    // ── Audio ──────────────────────────────────────────────────────────────────
+    function playBeep() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const times = [0, 0.35, 0.7];
+        times.forEach(t => {
+          const osc  = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0, ctx.currentTime + t);
+          gain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + t + 0.05);
+          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + t + 0.3);
+          osc.start(ctx.currentTime + t);
+          osc.stop(ctx.currentTime + t + 0.35);
+        });
+        setTimeout(() => ctx.close(), 2000);
+      } catch (_) { /* AudioContext not available in test environments */ }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function fmt(secs) {
+      const m = String(Math.floor(secs / 60)).padStart(2, '0');
+      const s = String(secs % 60).padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    function updateDisplay() {
+      timeEl.textContent = fmt(remaining);
+      const pct = remaining / totalSecs;
+      arc.style.strokeDashoffset = CIRCUMFERENCE * (1 - pct);
+    }
+
+    function setMode(breakMode) {
+      isBreak = breakMode;
+      totalSecs = breakMode ? BREAK_SECS : WORK_SECS;
+      remaining  = totalSecs;
+      arc.classList.toggle('break', breakMode);
+      badge.textContent = breakMode ? 'Break' : 'Work';
+      badge.classList.toggle('break', breakMode);
+      btnStart.classList.toggle('break-mode', breakMode);
+      updateDisplay();
+    }
+
+    function addTomato() {
+      const dot = document.createElement('div');
+      dot.className = 'tomato done';
+      tomatoBox.appendChild(dot);
+    }
+
+    function onTimerEnd() {
+      playBeep();
+      if (!isBreak) {
+        sessions++;
+        countEl.textContent = sessions;
+        addTomato();
+        setMode(true);
+      } else {
+        setMode(false);
+      }
+      // auto-start next phase
+      startTimer();
+    }
+
+    function tick() {
+      if (remaining <= 0) {
+        clearInterval(intervalId);
+        intervalId = null;
+        running = false;
+        btnStart.textContent = 'Start';
+        onTimerEnd();
+        return;
+      }
+      remaining--;
+      updateDisplay();
+    }
+
+    function startTimer() {
+      if (running) return;
+      running = true;
+      btnStart.textContent = 'Pause';
+      intervalId = setInterval(tick, 1000);
+    }
+
+    function pauseTimer() {
+      if (!running) return;
+      running = false;
+      btnStart.textContent = 'Resume';
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+
+    function resetTimer() {
+      pauseTimer();
+      isBreak = false;
+      setMode(false);
+      btnStart.textContent = 'Start';
+    }
+
+    // ── Event listeners ────────────────────────────────────────────────────────
+    btnStart.addEventListener('click', () => {
+      if (running) pauseTimer(); else startTimer();
+    });
+
+    btnReset.addEventListener('click', resetTimer);
+
+    // ── Initial render ─────────────────────────────────────────────────────────
+    updateDisplay();
+  </script>
+
+</body>
+</html>
