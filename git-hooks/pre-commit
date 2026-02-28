@@ -39,7 +39,7 @@ while IFS= read -r -d '' file; do
   format_files+=("$file")
 done < <(node "$FILTER_FILES" format -- "${files[@]}")
 
-# Run lint with auto-fix
+# Run lint with auto-fix (first pass fixes what it can)
 if [ "${#lint_files[@]}" -gt 0 ]; then
   "$RUN_NODE_TOOL" oxlint --fix -- "${lint_files[@]}" || true
 fi
@@ -51,3 +51,8 @@ fi
 
 # Re-stage fixed files
 git add -- "${files[@]}"
+
+# Run lint again to check for remaining errors (hard block)
+if [ "${#lint_files[@]}" -gt 0 ]; then
+  "$RUN_NODE_TOOL" oxlint -- "${lint_files[@]}"
+fi
