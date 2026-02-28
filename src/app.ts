@@ -8,6 +8,7 @@ import {
 } from "./store.js";
 import { healthCheck } from "./health.js";
 import { getStats } from "./stats.js";
+import { echoHandler } from "./echo.js";
 
 export const app: Express = express();
 app.use(express.json());
@@ -17,6 +18,10 @@ app.get("/health", healthCheck);
 
 // Stats
 app.get("/stats", getStats);
+
+// Echo (debugging)
+app.get("/echo", echoHandler);
+app.post("/echo", echoHandler);
 
 // List all todos
 app.get("/todos", (_req, res) => {
