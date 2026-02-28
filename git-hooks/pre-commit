@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Pre-commit hook: auto-fix lint + format on staged files
+# Install: cp git-hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+RUN_NODE_TOOL="$ROOT_DIR/scripts/pre-commit/run-node-tool.sh"
+FILTER_FILES="$ROOT_DIR/scripts/pre-commit/filter-staged-files.mjs"
+
+if [[ ! -x "$RUN_NODE_TOOL" ]]; then
+  echo "Missing helper: $RUN_NODE_TOOL" >&2
+  exit 1
+fi
+
+if [[ ! -f "$FILTER_FILES" ]]; then
+  echo "Missing helper: $FILTER_FILES" >&2
+  exit 1
+fi
+
+# Get staged files (NUL-delimited for safety with special filenames)
+files=()
+while IFS= read -r -d '' file; do
+  files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ "${#files[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+# Filter files by type
+lint_files=()
+while IFS= read -r -d '' file; do
+  lint_files+=("$file")
+done < <(node "$FILTER_FILES" lint -- "${files[@]}")
+
+format_files=()
+while IFS= read -r -d '' file; do
+  format_files+=("$file")
+done < <(node "$FILTER_FILES" format -- "${files[@]}")
+
+# Run lint with auto-fix
+if [ "${#lint_files[@]}" -gt 0 ]; then
+  "$RUN_NODE_TOOL" oxlint --fix -- "${lint_files[@]}" || true
+fi
+
+# Run format with auto-fix
+if [ "${#format_files[@]}" -gt 0 ]; then
+  "$RUN_NODE_TOOL" oxfmt --write -- "${format_files[@]}" || true
+fi
+
+# Re-stage fixed files
+git add -- "${files[@]}"

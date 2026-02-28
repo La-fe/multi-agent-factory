@@ -1,0 +1,39 @@
+{
+  "name": "multi-agent-factory",
+  "version": "0.1.0",
+  "description": "Multi-agent development factory — Peter Steinberger style. 30 AI agents, 627 commits/day.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check": "pnpm format:check && pnpm typecheck && pnpm lint",
+    "dev": "tsx watch src/index.ts",
+    "format": "oxfmt --write src test",
+    "format:check": "oxfmt --check src test",
+    "lint": "oxlint src test",
+    "lint:fix": "oxlint --fix src test && pnpm format",
+    "start": "node --import tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^7.2.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "oxfmt": "^0.7.0",
+    "oxlint": "^0.16.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
