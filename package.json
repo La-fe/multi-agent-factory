@@ -10,7 +10,7 @@
     "build": "tsc --noEmit",
     "check": "pnpm format:check && pnpm typecheck && pnpm lint",
     "dev": "tsx watch src/index.ts",
-    "format": "oxfmt --write src test",
+    "format": "oxfmt src test",
     "format:check": "oxfmt --check src test",
     "lint": "oxlint src test",
     "lint:fix": "oxlint --fix src test && pnpm format",

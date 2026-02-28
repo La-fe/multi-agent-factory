@@ -46,7 +46,7 @@ fi
 
 # Run format with auto-fix
 if [ "${#format_files[@]}" -gt 0 ]; then
-  "$RUN_NODE_TOOL" oxfmt --write -- "${format_files[@]}" || true
+  "$RUN_NODE_TOOL" oxfmt -- "${format_files[@]}" || true
 fi
 
 # Re-stage fixed files

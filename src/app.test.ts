@@ -10,9 +10,7 @@ beforeEach(() => {
 describe("API", () => {
   describe("POST /todos", () => {
     it("creates a todo", async () => {
-      const res = await request(app)
-        .post("/todos")
-        .send({ title: "Buy milk" });
+      const res = await request(app).post("/todos").send({ title: "Buy milk" });
 
       expect(res.status).toBe(201);
       expect(res.body.title).toBe("Buy milk");
@@ -48,9 +46,7 @@ describe("API", () => {
 
   describe("GET /todos/:id", () => {
     it("returns existing todo", async () => {
-      const created = await request(app)
-        .post("/todos")
-        .send({ title: "Test" });
+      const created = await request(app).post("/todos").send({ title: "Test" });
 
       const res = await request(app).get(`/todos/${created.body.id}`);
       expect(res.status).toBe(200);
@@ -65,9 +61,7 @@ describe("API", () => {
 
   describe("PUT /todos/:id", () => {
     it("updates todo", async () => {
-      const created = await request(app)
-        .post("/todos")
-        .send({ title: "Old" });
+      const created = await request(app).post("/todos").send({ title: "Old" });
 
       const res = await request(app)
         .put(`/todos/${created.body.id}`)
@@ -79,9 +73,7 @@ describe("API", () => {
     });
 
     it("returns 404 for missing", async () => {
-      const res = await request(app)
-        .put("/todos/999")
-        .send({ title: "X" });
+      const res = await request(app).put("/todos/999").send({ title: "X" });
       expect(res.status).toBe(404);
     });
   });

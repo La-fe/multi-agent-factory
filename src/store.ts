@@ -33,7 +33,7 @@ export function listTodos(): Todo[] {
 
 export function updateTodo(
   id: string,
-  updates: Partial<Pick<Todo, "title" | "completed">>
+  updates: Partial<Pick<Todo, "title" | "completed">>,
 ): Todo | undefined {
   const todo = todos.get(id);
   if (!todo) return undefined;
