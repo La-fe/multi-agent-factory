@@ -190,7 +190,8 @@ scripts/orchestrator owner/repo --label "status:ready"
 | `scripts/orchestrator` | Core: 6-phase automated issue-fixing pipeline (headless) |
 | `scripts/launch-agents` | Visual launcher: iTerm2 tabs/splits or tmux panes |
 | `scripts/create-worktree` | Initialize worktree with deps + hooks |
-| `scripts/review-prs` | Batch PR review with optional auto-merge |
+| `scripts/review-prs` | Batch PR review with auto-merge and auto-fix |
+| `scripts/monitor-agents` | Real-time tmux monitoring + auto-approve |
 | `scripts/committer` | Multi-agent safe commit helper |
 | `scripts/setup-hooks` | Install git hooks |
 
@@ -212,7 +213,30 @@ scripts/review-prs 5 7
 
 # Review + auto-merge approved PRs
 scripts/review-prs --auto-merge
+
+# Review + auto-fix PRs that need work (Phase 6)
+scripts/review-prs --auto-fix
+
+# Full pipeline: review → fix → merge
+scripts/review-prs --auto-fix --auto-merge
 ```
+
+### Monitoring (tmux)
+
+Real-time monitoring of parallel agents in tmux sessions with auto-approve.
+
+```bash
+# Continuous monitoring with auto-approve
+scripts/monitor-agents --auto-approve
+
+# Quick status check
+scripts/monitor-agents --once
+
+# Fast polling, custom session
+scripts/monitor-agents --interval 3 --session my-agents
+```
+
+Status detection: WORKING → WAITING → DONE → ERROR (auto-approve sends 'y' to permission prompts).
 
 ### Visual Mode (launch-agents)
 

@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Multi-Agent Monitor ──────────────────────────────────────────────
+# Real-time monitoring of parallel Claude agents in tmux sessions.
+# Based on OpenClaw's tmux skill patterns.
+#
+# Usage:
+#   scripts/monitor-agents                    # monitor default "agents" session
+#   scripts/monitor-agents --session my-sess  # monitor specific session
+#   scripts/monitor-agents --auto-approve     # auto-approve permission prompts
+#   scripts/monitor-agents --once             # single scan, no loop
+#   scripts/monitor-agents --interval 5       # scan every 5 seconds
+# ────────────────────────────────────────────────────────────────────────
+
+# ─── Defaults ───────────────────────────────────────────────────────────
+
+TMUX_SESSION="agents"
+AUTO_APPROVE=false
+ONCE=false
+INTERVAL=10
+TAIL_LINES=8
+
+# ─── Colors ─────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+# ─── Usage ──────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Multi-Agent Monitor — Real-time agent status + auto-approve
+
+Usage:
+  scripts/monitor-agents [options]
+
+Options:
+  --session <name>     tmux session name (default: agents)
+  --auto-approve       Auto-approve permission prompts (send 'y')
+  --once               Single scan, then exit
+  --interval <secs>    Scan interval in seconds (default: 10)
+  --tail <lines>       Lines of output to show per pane (default: 8)
+  -h, --help           Show this help
+
+Examples:
+  # Continuous monitoring with auto-approve
+  scripts/monitor-agents --auto-approve
+
+  # Quick status check
+  scripts/monitor-agents --once
+
+  # Fast polling
+  scripts/monitor-agents --interval 3 --auto-approve
+EOF
+  exit 0
+}
+
+# ─── Parse Args ─────────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session)      TMUX_SESSION="$2"; shift 2 ;;
+    --auto-approve) AUTO_APPROVE=true; shift ;;
+    --once)         ONCE=true; shift ;;
+    --interval)     INTERVAL="$2"; shift 2 ;;
+    --tail)         TAIL_LINES="$2"; shift 2 ;;
+    -h|--help)      usage ;;
+    *)              echo "Unknown option: $1" >&2; usage ;;
+  esac
+done
+
+# ─── Preflight ──────────────────────────────────────────────────────────
+
+if ! command -v tmux &>/dev/null; then
+  echo -e "${RED}ERROR: tmux is not installed${NC}" >&2
+  exit 1
+fi
+
+if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  echo -e "${RED}ERROR: tmux session '${TMUX_SESSION}' not found${NC}" >&2
+  echo ""
+  echo "  Available sessions:"
+  tmux list-sessions 2>/dev/null || echo "  (none)"
+  echo ""
+  echo "  Start agents first:"
+  echo "    scripts/launch-agents --issues 2 3 4 --mode tmux"
+  exit 1
+fi
+
+# ─── Status Detection ──────────────────────────────────────────────────
+
+# Permission prompt patterns (agent is waiting for approval)
+PERMISSION_PATTERNS='Allow|Approve|Yes.*No|proceed\?|permission|y/n|Y/n|\[Y/n\]|\[y/N\]'
+
+# Completion patterns (agent has finished)
+DONE_PATTERNS='✓.*complete|✓.*done|✓.*finished|Committed.*files|PR.*created|pushed.*origin'
+
+# Error patterns
+ERROR_PATTERNS='ERROR|FAIL|error:|Error:|panic:|fatal:'
+
+# Working patterns (agent is actively working)
+WORKING_PATTERNS='Reading|Writing|Editing|Searching|Running|Testing|Analyzing|Implementing'
+
+detect_status() {
+  local output="$1"
+
+  if echo "$output" | grep -qE "$PERMISSION_PATTERNS"; then
+    echo "WAITING"
+  elif echo "$output" | grep -qE "$ERROR_PATTERNS"; then
+    echo "ERROR"
+  elif echo "$output" | grep -qE "$DONE_PATTERNS"; then
+    echo "DONE"
+  elif echo "$output" | grep -qE "$WORKING_PATTERNS"; then
+    echo "WORKING"
+  elif [[ -z "$output" || "$output" =~ ^[[:space:]]*$ ]]; then
+    echo "IDLE"
+  else
+    echo "ACTIVE"
+  fi
+}
+
+status_icon() {
+  case "$1" in
+    WAITING) echo -e "${YELLOW}⏳ WAITING${NC}" ;;
+    ERROR)   echo -e "${RED}✗  ERROR${NC}" ;;
+    DONE)    echo -e "${GREEN}✓  DONE${NC}" ;;
+    WORKING) echo -e "${CYAN}⚙  WORKING${NC}" ;;
+    ACTIVE)  echo -e "${BLUE}▶  ACTIVE${NC}" ;;
+    IDLE)    echo -e "${DIM}○  IDLE${NC}" ;;
+    *)       echo -e "${DIM}?  UNKNOWN${NC}" ;;
+  esac
+}
+
+# ─── Auto-Approve ──────────────────────────────────────────────────────
+
+auto_approve_pane() {
+  local pane="$1"
+  local output="$2"
+
+  if [[ "$AUTO_APPROVE" != true ]]; then
+    return
+  fi
+
+  if echo "$output" | grep -qE "$PERMISSION_PATTERNS"; then
+    tmux send-keys -t "$pane" 'y' Enter
+    echo -e "  ${GREEN}→ Auto-approved permission prompt in ${pane}${NC}"
+  fi
+}
+
+# ─── Scan ───────────────────────────────────────────────────────────────
+
+scan_agents() {
+  local timestamp
+  timestamp=$(date '+%H:%M:%S')
+
+  # Clear screen for continuous mode
+  if [[ "$ONCE" != true ]]; then
+    clear
+  fi
+
+  echo -e "${BOLD}═══ Agent Monitor ═══  ${DIM}${timestamp}  session: ${TMUX_SESSION}${NC}"
+  if [[ "$AUTO_APPROVE" == true ]]; then
+    echo -e "${YELLOW}  Auto-approve: ON${NC}"
+  fi
+  echo ""
+
+  # Get all panes in the session
+  local panes
+  panes=$(tmux list-panes -t "$TMUX_SESSION" -F '#{pane_index}:#{pane_title}' 2>/dev/null || echo "")
+
+  if [[ -z "$panes" ]]; then
+    echo -e "${YELLOW}No panes found in session '${TMUX_SESSION}'${NC}"
+    return
+  fi
+
+  local total=0
+  local done_count=0
+  local error_count=0
+  local waiting_count=0
+  local working_count=0
+
+  while IFS=':' read -r pane_idx pane_title; do
+    total=$((total + 1))
+    local pane_ref="${TMUX_SESSION}:0.${pane_idx}"
+
+    # Capture pane output
+    local output
+    output=$(tmux capture-pane -t "$pane_ref" -p 2>/dev/null | tail -"$TAIL_LINES" || echo "")
+
+    # Detect status
+    local status
+    status=$(detect_status "$output")
+
+    case "$status" in
+      DONE)    done_count=$((done_count + 1)) ;;
+      ERROR)   error_count=$((error_count + 1)) ;;
+      WAITING) waiting_count=$((waiting_count + 1)) ;;
+      WORKING) working_count=$((working_count + 1)) ;;
+    esac
+
+    # Display
+    local label="${pane_title:-Pane ${pane_idx}}"
+    echo -e "┌─ ${BOLD}${label}${NC}  $(status_icon "$status")"
+
+    # Show last few lines of output (dimmed)
+    local last_line
+    last_line=$(echo "$output" | grep -v '^$' | tail -2)
+    if [[ -n "$last_line" ]]; then
+      echo "$last_line" | while IFS= read -r line; do
+        # Truncate long lines
+        if [[ ${#line} -gt 80 ]]; then
+          line="${line:0:77}..."
+        fi
+        echo -e "│ ${DIM}${line}${NC}"
+      done
+    fi
+    echo "└──────────────────────────────────────────"
+    echo ""
+
+    # Auto-approve if needed
+    auto_approve_pane "$pane_ref" "$output"
+
+  done <<< "$panes"
+
+  # Summary bar
+  echo -e "────────────────────────────────────────────────"
+  echo -ne "  Total: ${BOLD}${total}${NC}"
+  if [[ $working_count -gt 0 ]]; then echo -ne "  ${CYAN}Working: ${working_count}${NC}"; fi
+  if [[ $waiting_count -gt 0 ]]; then echo -ne "  ${YELLOW}Waiting: ${waiting_count}${NC}"; fi
+  if [[ $done_count -gt 0 ]]; then echo -ne "  ${GREEN}Done: ${done_count}${NC}"; fi
+  if [[ $error_count -gt 0 ]]; then echo -ne "  ${RED}Errors: ${error_count}${NC}"; fi
+  echo ""
+
+  # All done?
+  if [[ $done_count -eq $total && $total -gt 0 ]]; then
+    echo ""
+    echo -e "${GREEN}✓ All agents completed!${NC}"
+    echo "  Review PRs:  scripts/review-prs"
+    return 1  # Signal to stop loop
+  fi
+
+  if [[ $error_count -eq $total && $total -gt 0 ]]; then
+    echo ""
+    echo -e "${RED}✗ All agents failed.${NC}"
+    echo "  Check logs:  tmux attach -t ${TMUX_SESSION}"
+    return 1
+  fi
+
+  return 0
+}
+
+# ─── Main Loop ──────────────────────────────────────────────────────────
+
+if [[ "$ONCE" == true ]]; then
+  scan_agents || true
+else
+  echo -e "${DIM}Monitoring every ${INTERVAL}s. Press Ctrl-C to stop.${NC}"
+  sleep 1
+
+  while true; do
+    if ! scan_agents; then
+      break
+    fi
+
+    if [[ "$ONCE" == true ]]; then
+      break
+    fi
+
+    sleep "$INTERVAL"
+  done
+fi

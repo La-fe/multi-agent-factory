@@ -26,17 +26,30 @@ NC='\033[0m'
 # ─── Parse Args ─────────────────────────────────────────────────────────
 
 AUTO_MERGE=false
+AUTO_FIX=false
 MODEL="sonnet"
 BUDGET="0.50"
+FIX_BUDGET="1.50"
 PR_NUMBERS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --auto-merge) AUTO_MERGE=true; shift ;;
+    --auto-fix)   AUTO_FIX=true; shift ;;
     --model)      MODEL="$2"; shift 2 ;;
     --budget)     BUDGET="$2"; shift 2 ;;
+    --fix-budget) FIX_BUDGET="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: scripts/review-prs [PR numbers...] [--auto-merge] [--model M] [--budget N]"
+      cat <<'EOF'
+Usage: scripts/review-prs [PR numbers...] [options]
+
+Options:
+  --auto-merge     Merge PRs that pass review
+  --auto-fix       Spawn fix agents for PRs that need work (Phase 6)
+  --model M        Claude model (default: sonnet)
+  --budget N       Review budget per PR (default: 0.50)
+  --fix-budget N   Fix agent budget per PR (default: 1.50)
+EOF
       exit 0
       ;;
     *)
@@ -161,6 +174,7 @@ echo -e "${BOLD}═══ Review Results ═══${NC}"
 echo ""
 
 READY_PRS=()
+NEEDS_WORK_PRS=()
 
 for entry in "${ENTRIES[@]}"; do
   IFS=':' read -r pr_num result_file <<< "$entry"
@@ -177,6 +191,7 @@ for entry in "${ENTRIES[@]}"; do
       READY_PRS+=("$pr_num")
       echo -e "  ${GREEN}→ Verdict: READY FOR /landpr${NC}"
     elif echo "$RESULT_TEXT" | grep -qi "NEEDS WORK"; then
+      NEEDS_WORK_PRS+=("$pr_num")
       echo -e "  ${YELLOW}→ Verdict: NEEDS WORK${NC}"
     elif echo "$RESULT_TEXT" | grep -qi "NEEDS DISCUSSION"; then
       echo -e "  ${CYAN}→ Verdict: NEEDS DISCUSSION${NC}"
@@ -205,18 +220,149 @@ if [[ "$AUTO_MERGE" == true && ${#READY_PRS[@]} -gt 0 ]]; then
   done
 fi
 
+# ─── Phase 6: Auto-Fix ─────────────────────────────────────────────────
+
+if [[ "$AUTO_FIX" == true && ${#NEEDS_WORK_PRS[@]} -gt 0 ]]; then
+  echo -e "${BLUE}→ Phase 6: Spawning fix agents for ${#NEEDS_WORK_PRS[@]} PR(s)...${NC}"
+  echo ""
+
+  FIX_PIDS=()
+  FIX_ENTRIES=()
+
+  for pr_num in "${NEEDS_WORK_PRS[@]}"; do
+    PR_BRANCH=$(echo "$PRS_JSON" | jq -r ".[] | select(.number == ${pr_num}) | .headRefName")
+    PR_TITLE=$(echo "$PRS_JSON" | jq -r ".[] | select(.number == ${pr_num}) | .title")
+    FIX_RESULT_FILE="${RESULTS_DIR}/fix-pr-${pr_num}.json"
+
+    echo -e "  ${CYAN}▶ Fixing PR #${pr_num}: ${PR_TITLE}${NC}"
+
+    FIX_PROMPT="$(cat <<FIX_PROMPT_EOF
+You are a Fix Agent. A reviewer found issues with PR #${pr_num} ("${PR_TITLE}").
+
+## Instructions
+
+1. **Read the review comments** to understand what needs fixing:
+\`\`\`bash
+gh pr view ${pr_num} --json body,comments,reviews
+gh pr diff ${pr_num}
+\`\`\`
+
+2. **Read the review result** for detailed feedback:
+\`\`\`bash
+cat ${RESULTS_DIR}/review-pr-${pr_num}.json | jq -r '.result // .error // "No output"'
+\`\`\`
+
+3. **Checkout the PR branch** and make fixes:
+\`\`\`bash
+git checkout ${PR_BRANCH}
+\`\`\`
+
+4. **Apply the requested changes** — address every issue raised in the review.
+
+5. **Run quality checks**:
+\`\`\`bash
+pnpm check && pnpm test
+\`\`\`
+
+6. **Commit and push** using the project's commit helper:
+\`\`\`bash
+scripts/committer "fix(review): address review feedback for PR #${pr_num}" <changed-files...>
+git push
+\`\`\`
+
+## Rules
+- Only fix issues mentioned in the review — don't refactor unrelated code
+- All quality gates must pass before pushing
+- Use \`scripts/committer\` for commits (never \`git add .\`)
+- Keep changes minimal and focused
+FIX_PROMPT_EOF
+)"
+
+    (
+      cd "$REPO_ROOT"
+      unset CLAUDECODE
+      claude -p "$FIX_PROMPT" \
+        --dangerously-skip-permissions \
+        --model "$MODEL" \
+        --max-budget-usd "$FIX_BUDGET" \
+        --output-format json \
+        > "$FIX_RESULT_FILE" 2>&1
+    ) &
+
+    FIX_PIDS+=("$!")
+    FIX_ENTRIES+=("${pr_num}:${FIX_RESULT_FILE}")
+  done
+
+  echo ""
+  echo -e "${BLUE}→ Waiting for fix agents to complete...${NC}"
+
+  for pid in "${FIX_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  echo ""
+  echo -e "${BOLD}═══ Fix Results ═══${NC}"
+  echo ""
+
+  FIXED_PRS=()
+
+  for entry in "${FIX_ENTRIES[@]}"; do
+    IFS=':' read -r pr_num fix_file <<< "$entry"
+
+    echo -e "${BOLD}PR #${pr_num}:${NC}"
+
+    if [[ -f "$fix_file" ]]; then
+      FIX_TEXT=$(jq -r '.result // .error // "No output"' "$fix_file" 2>/dev/null || cat "$fix_file")
+      echo "$FIX_TEXT" | head -30
+      echo ""
+
+      if echo "$FIX_TEXT" | grep -qiE "pushed|push.*origin|git push"; then
+        FIXED_PRS+=("$pr_num")
+        echo -e "  ${GREEN}→ Fix pushed${NC}"
+      else
+        echo -e "  ${YELLOW}→ Fix status unclear — check manually${NC}"
+      fi
+    else
+      echo -e "  ${RED}No fix result produced${NC}"
+    fi
+
+    echo "────────────────────────────────────────────────────────"
+    echo ""
+  done
+
+  # Re-review fixed PRs
+  if [[ ${#FIXED_PRS[@]} -gt 0 ]]; then
+    echo -e "${BLUE}→ Re-reviewing ${#FIXED_PRS[@]} fixed PR(s)...${NC}"
+    echo ""
+    echo "  Run manually:"
+    for pr_num in "${FIXED_PRS[@]}"; do
+      echo "    scripts/review-prs ${pr_num}"
+    done
+    echo ""
+  fi
+fi
+
 # ─── Summary ────────────────────────────────────────────────────────────
 
 echo ""
 echo -e "${BOLD}Summary:${NC}"
 echo "  Total reviewed: $PR_COUNT"
 echo "  Ready to merge: ${#READY_PRS[@]}"
+echo "  Needs work:     ${#NEEDS_WORK_PRS[@]}"
+if [[ "$AUTO_FIX" == true && ${#NEEDS_WORK_PRS[@]} -gt 0 ]]; then
+  echo "  Fix agents ran: ${#NEEDS_WORK_PRS[@]}"
+fi
 if [[ ${#READY_PRS[@]} -gt 0 && "$AUTO_MERGE" != true ]]; then
   echo ""
   echo "  To merge approved PRs, run:"
   for pr_num in "${READY_PRS[@]}"; do
     echo "    gh pr merge ${pr_num} --squash --delete-branch"
   done
+fi
+if [[ ${#NEEDS_WORK_PRS[@]} -gt 0 && "$AUTO_FIX" != true ]]; then
+  echo ""
+  echo "  To auto-fix PRs that need work, run:"
+  echo "    scripts/review-prs ${NEEDS_WORK_PRS[*]} --auto-fix"
 fi
 echo ""
 echo -e "${GREEN}✓ Review complete${NC}"

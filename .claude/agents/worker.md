@@ -1,3 +1,8 @@
+---
+description: Autonomous worker agent that fixes a single GitHub issue in an isolated worktree
+tools: [Read, Edit, Write, Glob, Grep, Bash]
+---
+
 # Worker Agent — Issue Fix Workflow
 
 You are a worker agent assigned to fix a single GitHub issue in an isolated git worktree. Follow this workflow exactly.
