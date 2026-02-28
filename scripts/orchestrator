@@ -46,7 +46,26 @@ NC='\033[0m'
 
 # ─── Branch Naming ──────────────────────────────────────────────────────
 
-declare -A BRANCH_MAP  # issue_num -> branch_name
+# Branch map: JSON object { "issue_num": "branch_name" } (bash 3 compatible)
+BRANCH_MAP_FILE=$(mktemp)
+echo '{}' > "$BRANCH_MAP_FILE"
+
+branch_map_set() {
+  local num="$1" branch="$2"
+  local tmp; tmp=$(mktemp)
+  jq --arg n "$num" --arg b "$branch" '.[$n] = $b' "$BRANCH_MAP_FILE" > "$tmp" && mv "$tmp" "$BRANCH_MAP_FILE"
+}
+
+branch_map_get() {
+  local num="$1"
+  local result
+  result=$(jq -r --arg n "$num" '.[$n] // empty' "$BRANCH_MAP_FILE")
+  if [[ -n "$result" ]]; then
+    echo "$result"
+  else
+    echo "fix/issue-${num}"
+  fi
+}
 
 # Determine branch prefix from issue labels
 branch_for_issue() {
@@ -100,6 +119,9 @@ cleanup() {
   if [[ -f "$CLAIMS_FILE" ]]; then
     echo '{}' > "$CLAIMS_FILE"
   fi
+
+  # Clean temp files
+  rm -f "$BRANCH_MAP_FILE" 2>/dev/null || true
 
   echo -e "${GREEN}✓ Cleanup complete${NC}"
 }
@@ -284,7 +306,7 @@ for i in $(seq 0 $((ISSUE_COUNT - 1))); do
   ISSUE_TITLE=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
   ISSUE_LABELS=$(echo "$ISSUES_JSON" | jq -r ".[$i].labels | map(.name) | join(\",\")")
   BRANCH_NAME=$(branch_for_issue "$ISSUE_NUM" "$ISSUE_LABELS")
-  BRANCH_MAP["$ISSUE_NUM"]="$BRANCH_NAME"
+  branch_map_set "$ISSUE_NUM" "$BRANCH_NAME"
 
   # Check if branch already exists
   if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}" 2>/dev/null; then
@@ -381,7 +403,8 @@ spawn_agent() {
   local issue_num="$1"
   local issue_title="$2"
   local issue_body="$3"
-  local branch_name="${BRANCH_MAP[$issue_num]:-fix/issue-${issue_num}}"
+  local branch_name
+  branch_name=$(branch_map_get "$issue_num")
   local worktree_path="${WORKTREE_DIR}/${branch_name}"
   local result_file="${RESULTS_DIR}/issue-${issue_num}.json"
 
@@ -540,7 +563,7 @@ echo ""
 echo -e "${BLUE}→ Created PRs:${NC}"
 for entry in "${RESULTS[@]+"${RESULTS[@]}"}"; do
   IFS=':' read -r issue_num pid result_file <<< "$entry"
-  BRANCH_NAME="${BRANCH_MAP[$issue_num]:-fix/issue-${issue_num}}"
+  BRANCH_NAME=$(branch_map_get "$issue_num")
   PR_INFO=$(gh pr list ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --state open --head "$BRANCH_NAME" --json number,url 2>/dev/null || echo '[]')
   PR_COUNT=$(echo "$PR_INFO" | jq 'length')
   if [[ "$PR_COUNT" -gt 0 ]]; then
