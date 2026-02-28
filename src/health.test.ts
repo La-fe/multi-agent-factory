@@ -23,4 +23,12 @@ describe("GET /health", () => {
     expect(typeof res.body.uptime).toBe("number");
     expect(typeof res.body.timestamp).toBe("string");
   });
+
+  it("returns timestamp in ISO 8601 format", async () => {
+    const res = await request(createApp()).get("/health");
+    const ts = res.body.timestamp as string;
+    // ISO 8601: YYYY-MM-DDTHH:mm:ss.sssZ
+    expect(ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(new Date(ts).toISOString()).toBe(ts);
+  });
 });
