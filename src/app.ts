@@ -7,6 +7,7 @@ import {
   updateTodo,
 } from "./store.js";
 import { healthCheck } from "./health.js";
+import { ping } from "./ping.js";
 import { getStats } from "./stats.js";
 
 export const app: Express = express();
@@ -14,6 +15,9 @@ app.use(express.json());
 
 // Health check
 app.get("/health", healthCheck);
+
+// Ping
+app.get("/ping", ping);
 
 // Stats
 app.get("/stats", getStats);
