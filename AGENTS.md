@@ -187,7 +187,8 @@ scripts/orchestrator owner/repo --label "status:ready"
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/orchestrator` | Core: 6-phase automated issue-fixing pipeline |
+| `scripts/orchestrator` | Core: 6-phase automated issue-fixing pipeline (headless) |
+| `scripts/launch-agents` | Visual launcher: iTerm2 tabs/splits or tmux panes |
 | `scripts/create-worktree` | Initialize worktree with deps + hooks |
 | `scripts/review-prs` | Batch PR review with optional auto-merge |
 | `scripts/committer` | Multi-agent safe commit helper |
@@ -212,6 +213,39 @@ scripts/review-prs 5 7
 # Review + auto-merge approved PRs
 scripts/review-prs --auto-merge
 ```
+
+### Visual Mode (launch-agents)
+
+Watch agents work in real-time — each agent gets its own iTerm2 tab/pane.
+
+```bash
+# iTerm2 tabs — one tab per agent (default)
+scripts/launch-agents --issues 2 3 4
+
+# iTerm2 vertical splits — see all agents side by side
+scripts/launch-agents --issues 2 3 4 --mode split
+
+# By label instead of issue numbers
+scripts/launch-agents --label "status:ready" --mode tab
+
+# tmux — SSH-friendly, detachable
+scripts/launch-agents --issues 2 3 --mode tmux
+
+# Interactive mode — you chat with each agent manually
+scripts/launch-agents --issues 2 --interactive
+
+# Dry run — show what would launch
+scripts/launch-agents --label "status:ready" --dry-run
+```
+
+**Headless vs Visual:**
+
+| | `scripts/orchestrator` | `scripts/launch-agents` |
+|---|---|---|
+| Execution | Background, `claude -p` | Foreground, visible terminals |
+| Monitoring | Wait + summary table | Watch each agent in real-time |
+| Interaction | None (fully autonomous) | Optional (`--interactive`) |
+| Best for | CI, batch processing, 5+ issues | Learning, debugging, 2-4 issues |
 
 ### Safety Mechanisms
 

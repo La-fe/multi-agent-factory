@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Visual Multi-Agent Launcher ───────────────────────────────────────
+# Launches parallel Claude agents in iTerm2 tabs/splits or tmux panes,
+# so you can watch each agent work in real-time.
+#
+# This is the "visual mode" counterpart to scripts/orchestrator (headless).
+#
+# Usage:
+#   scripts/launch-agents --issues 2 3 4              # specific issues
+#   scripts/launch-agents --label status:ready         # by label
+#   scripts/launch-agents --issues 2 3 --mode split    # iTerm2 splits
+#   scripts/launch-agents --issues 2 3 --mode tmux     # tmux session
+#   scripts/launch-agents --issues 2 3 --interactive   # interactive claude (not -p)
+#
+# Requires: gh, jq, claude CLI
+#           iTerm2 (for tab/split modes) or tmux (for tmux mode)
+# ────────────────────────────────────────────────────────────────────────
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+WORKTREE_DIR="${REPO_ROOT}/.worktrees"
+WORKER_PROMPT_FILE="${REPO_ROOT}/.claude/agents/worker.md"
+
+# ─── Defaults ───────────────────────────────────────────────────────────
+
+MODE="tab"           # tab | split | tmux
+ISSUES=()
+LABEL=""
+LIMIT=5
+MODEL="sonnet"
+BUDGET="2.00"
+BASE_BRANCH="main"
+INTERACTIVE=false
+DRY_RUN=false
+TMUX_SESSION="agents"
+
+# ─── Colors ─────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Usage ──────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Visual Multi-Agent Launcher — Watch agents work in real-time
+
+Usage:
+  scripts/launch-agents --issues 2 3 4 [options]
+  scripts/launch-agents --label status:ready [options]
+
+Source (pick one):
+  --issues <n...>        Specific issue numbers
+  --label <label>        Fetch issues by label
+
+Display modes:
+  --mode tab             iTerm2 tabs (default)
+  --mode split           iTerm2 vertical splits
+  --mode tmux            tmux session with panes
+
+Options:
+  --model <model>        Claude model (default: sonnet)
+  --budget <usd>         Max budget per agent (default: 2.00)
+  --base <branch>        Base branch (default: main)
+  --limit <n>            Max issues when using --label (default: 5)
+  --interactive          Launch interactive claude (not headless -p)
+  --dry-run              Show what would be launched
+  --session <name>       tmux session name (default: agents)
+  -h, --help             Show this help
+
+Examples:
+  # Launch 3 agents in iTerm2 tabs
+  scripts/launch-agents --issues 2 3 4
+
+  # Launch by label in iTerm2 splits (side by side)
+  scripts/launch-agents --label "status:ready" --mode split
+
+  # Launch in tmux (SSH-friendly)
+  scripts/launch-agents --issues 2 3 --mode tmux
+
+  # Interactive mode — you chat with each agent
+  scripts/launch-agents --issues 2 --mode tab --interactive
+EOF
+  exit 0
+}
+
+# ─── Parse Args ─────────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --issues)
+      shift
+      while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+        ISSUES+=("$1"); shift
+      done
+      ;;
+    --label)      LABEL="$2"; shift 2 ;;
+    --mode)       MODE="$2"; shift 2 ;;
+    --model)      MODEL="$2"; shift 2 ;;
+    --budget)     BUDGET="$2"; shift 2 ;;
+    --base)       BASE_BRANCH="$2"; shift 2 ;;
+    --limit)      LIMIT="$2"; shift 2 ;;
+    --interactive) INTERACTIVE=true; shift ;;
+    --dry-run)    DRY_RUN=true; shift ;;
+    --session)    TMUX_SESSION="$2"; shift 2 ;;
+    -h|--help)    usage ;;
+    *)            echo "Unknown option: $1" >&2; usage ;;
+  esac
+done
+
+if [[ ${#ISSUES[@]} -eq 0 && -z "$LABEL" ]]; then
+  echo -e "${RED}ERROR: Specify --issues or --label${NC}" >&2
+  usage
+fi
+
+# ─── Preflight ──────────────────────────────────────────────────────────
+
+for tool in gh jq claude; do
+  if ! command -v "$tool" &>/dev/null; then
+    echo -e "${RED}ERROR: '$tool' is not installed${NC}" >&2
+    exit 1
+  fi
+done
+
+if [[ "$MODE" == "tab" || "$MODE" == "split" ]]; then
+  if ! osascript -e 'tell application "iTerm2" to name of current window' &>/dev/null; then
+    echo -e "${YELLOW}WARNING: iTerm2 not running or not accessible. Falling back to tmux.${NC}"
+    MODE="tmux"
+  fi
+fi
+
+if [[ "$MODE" == "tmux" ]]; then
+  if ! command -v tmux &>/dev/null; then
+    echo -e "${RED}ERROR: tmux is not installed${NC}" >&2
+    exit 1
+  fi
+fi
+
+# ─── Branch Naming ──────────────────────────────────────────────────────
+
+branch_for_issue() {
+  local issue_num="$1"
+  local labels="$2"
+
+  local prefix="fix"
+  if echo "$labels" | grep -qi "enhancement\|feature\|feat"; then
+    prefix="feat"
+  elif echo "$labels" | grep -qi "refactor"; then
+    prefix="refactor"
+  elif echo "$labels" | grep -qi "docs\|documentation"; then
+    prefix="docs"
+  elif echo "$labels" | grep -qi "test"; then
+    prefix="test"
+  elif echo "$labels" | grep -qi "chore"; then
+    prefix="chore"
+  fi
+
+  echo "${prefix}/issue-${issue_num}"
+}
+
+# ─── Fetch Issues ───────────────────────────────────────────────────────
+
+echo -e "${BOLD}═══ Visual Agent Launcher ═══${NC}"
+echo ""
+
+declare -A ISSUE_TITLES
+declare -A ISSUE_BODIES
+declare -A ISSUE_BRANCHES
+
+if [[ -n "$LABEL" ]]; then
+  echo -e "${BLUE}→ Fetching issues (label: ${LABEL}, limit: ${LIMIT})${NC}"
+  ISSUES_JSON=$(gh issue list --state open --label "$LABEL" --limit "$LIMIT" \
+    --json number,title,body,labels)
+  ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length')
+
+  if [[ "$ISSUE_COUNT" -eq 0 ]]; then
+    echo -e "${YELLOW}No issues found with label '${LABEL}'${NC}"
+    exit 0
+  fi
+
+  ISSUES=()
+  for i in $(seq 0 $((ISSUE_COUNT - 1))); do
+    NUM=$(echo "$ISSUES_JSON" | jq -r ".[$i].number")
+    ISSUES+=("$NUM")
+    ISSUE_TITLES["$NUM"]=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
+    ISSUE_BODIES["$NUM"]=$(echo "$ISSUES_JSON" | jq -r ".[$i].body // \"No description.\"")
+    LABELS_STR=$(echo "$ISSUES_JSON" | jq -r ".[$i].labels | map(.name) | join(\",\")")
+    ISSUE_BRANCHES["$NUM"]=$(branch_for_issue "$NUM" "$LABELS_STR")
+  done
+else
+  echo -e "${BLUE}→ Fetching issue details...${NC}"
+  for num in "${ISSUES[@]}"; do
+    ISSUE_DATA=$(gh issue view "$num" --json number,title,body,labels 2>/dev/null || echo '{}')
+    if [[ $(echo "$ISSUE_DATA" | jq 'has("number")') != "true" ]]; then
+      echo -e "${RED}ERROR: Issue #${num} not found${NC}" >&2
+      exit 1
+    fi
+    ISSUE_TITLES["$num"]=$(echo "$ISSUE_DATA" | jq -r '.title')
+    ISSUE_BODIES["$num"]=$(echo "$ISSUE_DATA" | jq -r '.body // "No description."')
+    LABELS_STR=$(echo "$ISSUE_DATA" | jq -r '.labels | map(.name) | join(",")')
+    ISSUE_BRANCHES["$num"]=$(branch_for_issue "$num" "$LABELS_STR")
+  done
+fi
+
+# ─── Display Plan ───────────────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}Agents to launch:${NC}"
+echo "┌──────┬──────────────────────────────────┬────────────────────────┐"
+printf "│ %-4s │ %-32s │ %-22s │\n" "#" "Title" "Branch"
+echo "├──────┼──────────────────────────────────┼────────────────────────┤"
+for num in "${ISSUES[@]}"; do
+  TITLE="${ISSUE_TITLES[$num]}"
+  BRANCH="${ISSUE_BRANCHES[$num]}"
+  [[ ${#TITLE} -gt 30 ]] && TITLE="${TITLE:0:27}..."
+  [[ ${#BRANCH} -gt 20 ]] && BRANCH="${BRANCH:0:17}..."
+  printf "│ %-4s │ %-32s │ %-22s │\n" "$num" "$TITLE" "$BRANCH"
+done
+echo "└──────┴──────────────────────────────────┴────────────────────────┘"
+echo ""
+echo -e "  Mode: ${CYAN}${MODE}${NC} | Model: ${MODEL} | Budget: \$${BUDGET}/agent"
+echo ""
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo -e "${CYAN}[DRY RUN] Would launch ${#ISSUES[@]} agent(s) in ${MODE} mode${NC}"
+  exit 0
+fi
+
+# ─── Create Worktrees ───────────────────────────────────────────────────
+
+echo -e "${BLUE}→ Creating worktrees...${NC}"
+
+for num in "${ISSUES[@]}"; do
+  BRANCH="${ISSUE_BRANCHES[$num]}"
+  WT_PATH="${WORKTREE_DIR}/${BRANCH}"
+
+  if [[ -d "$WT_PATH" ]]; then
+    echo -e "  ${YELLOW}⊘ #${num}: Worktree exists, reusing${NC}"
+  else
+    if bash "${REPO_ROOT}/scripts/create-worktree" "$BRANCH" "$BASE_BRANCH" >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓ #${num}: ${WT_PATH}${NC}"
+    else
+      echo -e "  ${RED}✗ #${num}: Failed to create worktree${NC}"
+      exit 1
+    fi
+  fi
+done
+
+# ─── Build Agent Commands ───────────────────────────────────────────────
+
+WORKER_PROMPT_BASE=""
+if [[ -f "$WORKER_PROMPT_FILE" ]]; then
+  WORKER_PROMPT_BASE=$(cat "$WORKER_PROMPT_FILE")
+fi
+
+declare -A AGENT_CMDS
+
+for num in "${ISSUES[@]}"; do
+  BRANCH="${ISSUE_BRANCHES[$num]}"
+  WT_PATH="${WORKTREE_DIR}/${BRANCH}"
+  TITLE="${ISSUE_TITLES[$num]}"
+  BODY="${ISSUE_BODIES[$num]}"
+
+  # Write the prompt to a temp file in the worktree (avoids shell escaping hell)
+  PROMPT_FILE="${WT_PATH}/.agent-prompt.md"
+  cat > "$PROMPT_FILE" <<PROMPT
+${WORKER_PROMPT_BASE}
+
+---
+
+## Your Assignment
+
+**Issue #${num}: ${TITLE}**
+
+${BODY}
+
+## Important Context
+
+- You are working in worktree: ${WT_PATH}
+- Your branch: ${BRANCH}
+- Base branch: ${BASE_BRANCH}
+- Create a PR that references: fixes #${num}
+- Follow ALL rules in AGENTS.md
+PROMPT
+
+  if [[ "$INTERACTIVE" == true ]]; then
+    # Interactive mode — user chats with each agent
+    AGENT_CMDS["$num"]="cd '${WT_PATH}' && unset CLAUDECODE && claude"
+  else
+    # Headless mode — agent works autonomously
+    AGENT_CMDS["$num"]="cd '${WT_PATH}' && unset CLAUDECODE && claude -p \"\$(cat .agent-prompt.md)\" --dangerously-skip-permissions --model ${MODEL} --max-budget-usd ${BUDGET}"
+  fi
+done
+
+# ─── Launch: iTerm2 Tab Mode ───────────────────────────────────────────
+
+launch_iterm_tabs() {
+  local first=true
+  local applescript=""
+
+  applescript+='tell application "iTerm2"
+  activate
+  tell current window
+'
+
+  for num in "${ISSUES[@]}"; do
+    local cmd="${AGENT_CMDS[$num]}"
+    local title="Agent #${num}"
+    # Escape for AppleScript
+    cmd="${cmd//\\/\\\\}"
+    cmd="${cmd//\"/\\\"}"
+
+    if [[ "$first" == true ]]; then
+      applescript+="
+    tell current session
+      set name to \"${title}\"
+      write text \"${cmd}\"
+    end tell
+"
+      first=false
+    else
+      applescript+="
+    set newTab to (create tab with default profile)
+    tell current session of newTab
+      set name to \"${title}\"
+      write text \"${cmd}\"
+    end tell
+"
+    fi
+  done
+
+  applescript+='
+  end tell
+end tell'
+
+  osascript -e "$applescript"
+}
+
+# ─── Launch: iTerm2 Split Mode ─────────────────────────────────────────
+
+launch_iterm_splits() {
+  local first=true
+  local applescript=""
+
+  applescript+='tell application "iTerm2"
+  activate
+  tell current window
+    tell current session
+'
+
+  for num in "${ISSUES[@]}"; do
+    local cmd="${AGENT_CMDS[$num]}"
+    local title="Agent #${num}"
+    cmd="${cmd//\\/\\\\}"
+    cmd="${cmd//\"/\\\"}"
+
+    if [[ "$first" == true ]]; then
+      applescript+="
+      set name to \"${title}\"
+      write text \"${cmd}\"
+"
+      first=false
+    else
+      applescript+="
+      set newPane to (split vertically with default profile)
+      tell newPane
+        set name to \"${title}\"
+        write text \"${cmd}\"
+      end tell
+"
+    fi
+  done
+
+  applescript+='
+    end tell
+  end tell
+end tell'
+
+  osascript -e "$applescript"
+}
+
+# ─── Launch: tmux Mode ─────────────────────────────────────────────────
+
+launch_tmux() {
+  # Kill existing session if present
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+  local first=true
+
+  for num in "${ISSUES[@]}"; do
+    local cmd="${AGENT_CMDS[$num]}"
+
+    if [[ "$first" == true ]]; then
+      tmux new-session -d -s "$TMUX_SESSION" -n "agent-${num}"
+      tmux send-keys -t "$TMUX_SESSION" "$cmd" Enter
+      first=false
+    else
+      tmux split-window -h -t "$TMUX_SESSION"
+      tmux send-keys "$cmd" Enter
+    fi
+  done
+
+  # Even out the layout
+  tmux select-layout -t "$TMUX_SESSION" even-horizontal 2>/dev/null || true
+
+  echo ""
+  echo -e "${GREEN}✓ tmux session '${TMUX_SESSION}' created with ${#ISSUES[@]} pane(s)${NC}"
+  echo ""
+  echo "  Attach:   tmux attach -t ${TMUX_SESSION}"
+  echo "  Monitor:  tmux list-panes -t ${TMUX_SESSION}"
+  echo "  Kill:     tmux kill-session -t ${TMUX_SESSION}"
+  echo ""
+
+  # Auto-attach if we're in an interactive terminal
+  if [[ -t 0 ]]; then
+    read -rp "Attach now? [Y/n] " response
+    if [[ "$response" != "n" && "$response" != "N" ]]; then
+      tmux attach -t "$TMUX_SESSION"
+    fi
+  fi
+}
+
+# ─── Dispatch ───────────────────────────────────────────────────────────
+
+echo -e "${BLUE}→ Launching ${#ISSUES[@]} agent(s) in ${MODE} mode...${NC}"
+
+case "$MODE" in
+  tab)   launch_iterm_tabs ;;
+  split) launch_iterm_splits ;;
+  tmux)  launch_tmux ;;
+  *)
+    echo -e "${RED}Unknown mode: ${MODE}. Use tab, split, or tmux.${NC}" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$MODE" != "tmux" ]]; then
+  echo ""
+  echo -e "${GREEN}✓ ${#ISSUES[@]} agent(s) launched in iTerm2 (${MODE} mode)${NC}"
+  echo ""
+  echo "  Each agent is working on its issue in an isolated worktree."
+  echo "  Switch between tabs/panes with ⌘← ⌘→ (tabs) or ⌘[ ⌘] (splits)."
+  echo ""
+  echo "  When agents finish, review PRs:"
+  echo "    scripts/review-prs"
+  echo ""
+  echo "  To clean up worktrees afterward:"
+  for num in "${ISSUES[@]}"; do
+    BRANCH="${ISSUE_BRANCHES[$num]}"
+    echo "    git worktree remove .worktrees/${BRANCH}"
+  done
+fi
