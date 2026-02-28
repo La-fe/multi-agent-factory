@@ -7,9 +7,10 @@
 
 - Source code: `src/` (API routes, services, utilities)
 - Tests: colocated `*.test.ts` next to source files
-- Scripts: `scripts/` (committer, pre-commit helpers)
+- Scripts: `scripts/` (committer, orchestrator, create-worktree, review-prs)
 - CI/CD: `.github/workflows/`
 - Agent prompts: `.claude/prompts/` (PR review, merge, issue analysis)
+- Agent definitions: `.claude/agents/` (worker, reviewer)
 - Git hooks: `git-hooks/`
 
 ## Build, Test, and Development Commands
@@ -129,3 +130,95 @@ Every commit must pass these checks (enforced by pre-commit hooks and CI):
 5. **Security**: no secrets in commits (checked by CI)
 
 If a check fails, fix it before committing. Do not bypass hooks.
+
+---
+
+## Automated Orchestration
+
+The orchestrator (`scripts/orchestrator`) automates the full multi-agent workflow:
+fetch GitHub issues → spawn parallel Claude agents in isolated worktrees → each
+agent fixes an issue and creates a PR.
+
+### Quick Start
+
+```bash
+# 1. Label issues as ready
+gh issue edit 42 --add-label "status:ready"
+
+# 2. Run orchestrator
+scripts/orchestrator --label "status:ready" --limit 3
+
+# 3. Review generated PRs
+scripts/review-prs
+```
+
+### Orchestrator Commands
+
+```bash
+# Preview what would be processed (no agents spawned)
+scripts/orchestrator --label "status:ready" --dry-run
+
+# Process up to 5 issues, 3 agents in parallel
+scripts/orchestrator --label "status:ready" --limit 5 --max-parallel 3
+
+# Skip confirmation, custom budget per agent
+scripts/orchestrator --label bug --limit 3 --yes --budget 2.00
+
+# Use a specific model
+scripts/orchestrator --label "status:ready" --model opus --budget 5.00
+
+# Continuous mode: re-run every 5 minutes
+scripts/orchestrator --label "status:ready" --watch --interval 300
+
+# Target a specific repository
+scripts/orchestrator owner/repo --label "status:ready"
+```
+
+### 6-Phase Workflow
+
+1. **Parse** — CLI arguments and configuration
+2. **Fetch** — Pull open issues from GitHub matching the label filter
+3. **Confirm** — Display issue table, let user select which to process
+4. **Pre-check** — Verify no duplicate branches/PRs, check claims
+5. **Spawn** — Create worktrees + launch parallel Claude agents
+6. **Report** — Wait for completion, display results, clean up
+
+### Scripts Reference
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/orchestrator` | Core: 6-phase automated issue-fixing pipeline |
+| `scripts/create-worktree` | Initialize worktree with deps + hooks |
+| `scripts/review-prs` | Batch PR review with optional auto-merge |
+| `scripts/committer` | Multi-agent safe commit helper |
+| `scripts/setup-hooks` | Install git hooks |
+
+### Agent Definitions
+
+| Agent | File | Role |
+|-------|------|------|
+| Worker | `.claude/agents/worker.md` | Fix issues: analyze → implement → test → commit → PR |
+| Reviewer | `.claude/agents/reviewer.md` | Review PRs: read-only, structured verdict output |
+
+### Review Commands
+
+```bash
+# Review all open PRs
+scripts/review-prs
+
+# Review specific PRs
+scripts/review-prs 5 7
+
+# Review + auto-merge approved PRs
+scripts/review-prs --auto-merge
+```
+
+### Safety Mechanisms
+
+- **Worktree isolation**: Each agent works in its own directory, no cross-contamination
+- **Claims system**: `.claude/claims.json` prevents two agents from working on the same issue
+- **Atomic locking**: `mkdir`-based locks (macOS-compatible, no `flock` needed)
+- **Budget caps**: `--max-budget-usd` limits per-agent spend
+- **Cleanup trap**: `Ctrl-C` safely kills agents, removes worktrees, releases claims
+- **Pre-checks**: Skips issues that already have branches or PRs
+- **Quality gates**: Pre-commit hooks + CI block bad code from merging

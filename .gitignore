@@ -7,3 +7,6 @@ coverage/
 .DS_Store
 .local/
 .worktrees/
+.claude/results/
+.claude/claims.json
+.claude/claims.json.lock/

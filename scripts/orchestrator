@@ -1,0 +1,531 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Multi-Agent Orchestrator ──────────────────────────────────────────
+# Replicates OpenClaw's gh-issues 6-phase automated workflow.
+# Fetches GitHub issues → spawns parallel Claude agents in isolated
+# worktrees → each agent fixes an issue and creates a PR.
+#
+# Usage:
+#   scripts/orchestrator [owner/repo] --label status:ready --limit 5
+#   scripts/orchestrator --label bug --limit 3 --max-parallel 2
+#   scripts/orchestrator --dry-run --label status:ready
+#
+# Requires: gh, jq, claude CLI
+# ────────────────────────────────────────────────────────────────────────
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+WORKTREE_DIR="${REPO_ROOT}/.worktrees"
+CLAIMS_FILE="${REPO_ROOT}/.claude/claims.json"
+RESULTS_DIR="${REPO_ROOT}/.claude/results"
+
+# ─── Defaults ───────────────────────────────────────────────────────────
+
+REPO=""
+LABEL="status:ready"
+LIMIT=5
+MAX_PARALLEL=3
+DRY_RUN=false
+AUTO_YES=false
+WATCH=false
+WATCH_INTERVAL=300
+MODEL="sonnet"
+BUDGET="1.00"
+BASE_BRANCH="main"
+
+# ─── Colors ─────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Cleanup Trap ───────────────────────────────────────────────────────
+
+SPAWNED_PIDS=()
+CREATED_WORKTREES=()
+
+cleanup() {
+  echo ""
+  echo -e "${YELLOW}→ Cleaning up...${NC}"
+
+  # Kill any running agent processes
+  for pid in "${SPAWNED_PIDS[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      echo "  Stopped agent PID $pid"
+    fi
+  done
+
+  # Remove worktrees
+  for wt in "${CREATED_WORKTREES[@]}"; do
+    if [[ -d "$wt" ]]; then
+      git worktree remove --force "$wt" 2>/dev/null || true
+      echo "  Removed worktree: $wt"
+    fi
+  done
+
+  # Release all claims
+  if [[ -f "$CLAIMS_FILE" ]]; then
+    echo '{}' > "$CLAIMS_FILE"
+  fi
+
+  echo -e "${GREEN}✓ Cleanup complete${NC}"
+}
+
+trap cleanup EXIT INT TERM
+
+# ─── Usage ──────────────────────────────────────────────────────────────
+
+usage() {
+  cat <<'EOF'
+Multi-Agent Orchestrator — Automated Issue Fixing Pipeline
+
+Usage:
+  scripts/orchestrator [owner/repo] [options]
+
+Options:
+  --label <label>        Issue label to filter (default: status:ready)
+  --limit <n>            Max issues to process (default: 5)
+  --max-parallel <n>     Max concurrent agents (default: 3)
+  --base <branch>        Base branch (default: main)
+  --model <model>        Claude model (default: sonnet)
+  --budget <usd>         Max budget per agent in USD (default: 1.00)
+  --dry-run              Show issues without processing
+  --yes                  Skip confirmation prompt
+  --watch                Continuous mode: re-run after interval
+  --interval <seconds>   Watch interval (default: 300)
+  -h, --help             Show this help
+
+Examples:
+  scripts/orchestrator --label "status:ready" --limit 3
+  scripts/orchestrator owner/repo --label bug --max-parallel 2 --dry-run
+  scripts/orchestrator --label "status:ready" --limit 1 --yes --budget 2.00
+EOF
+  exit 0
+}
+
+# ─── Phase 1: Parse Arguments ──────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --label)      LABEL="$2"; shift 2 ;;
+    --limit)      LIMIT="$2"; shift 2 ;;
+    --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
+    --base)       BASE_BRANCH="$2"; shift 2 ;;
+    --model)      MODEL="$2"; shift 2 ;;
+    --budget)     BUDGET="$2"; shift 2 ;;
+    --dry-run)    DRY_RUN=true; shift ;;
+    --yes)        AUTO_YES=true; shift ;;
+    --watch)      WATCH=true; shift ;;
+    --interval)   WATCH_INTERVAL="$2"; shift 2 ;;
+    -h|--help)    usage ;;
+    -*)           echo "Unknown option: $1" >&2; usage ;;
+    *)            REPO="$1"; shift ;;
+  esac
+done
+
+# ─── Phase 2: Preflight Checks ─────────────────────────────────────────
+
+echo -e "${BOLD}═══ Multi-Agent Orchestrator ═══${NC}"
+echo ""
+
+# Check required tools
+for tool in gh jq claude; do
+  if ! command -v "$tool" &>/dev/null; then
+    echo -e "${RED}ERROR: '$tool' is not installed${NC}" >&2
+    exit 1
+  fi
+done
+
+# Check gh auth
+if ! gh auth status &>/dev/null; then
+  echo -e "${RED}ERROR: Not authenticated with GitHub. Run 'gh auth login'${NC}" >&2
+  exit 1
+fi
+
+# Check git state
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo -e "${YELLOW}WARNING: Working tree has uncommitted changes${NC}"
+  echo "  Agents use isolated worktrees, but a clean state is recommended."
+  if [[ "$AUTO_YES" != true ]]; then
+    read -rp "  Continue anyway? [y/N] " response
+    if [[ "$response" != "y" && "$response" != "Y" ]]; then
+      exit 0
+    fi
+  fi
+fi
+
+# Ensure results directory exists
+mkdir -p "$RESULTS_DIR"
+
+# Initialize claims file if needed
+if [[ ! -f "$CLAIMS_FILE" ]]; then
+  echo '{}' > "$CLAIMS_FILE"
+fi
+
+# Build repo flag
+REPO_FLAG=()
+if [[ -n "$REPO" ]]; then
+  REPO_FLAG=(-R "$REPO")
+fi
+
+# ─── Phase 3: Fetch Issues ─────────────────────────────────────────────
+
+echo -e "${BLUE}→ Phase 1: Fetching issues (label: ${LABEL}, limit: ${LIMIT})${NC}"
+
+ISSUES_JSON=$(gh issue list "${REPO_FLAG[@]}" \
+  --state open \
+  --label "$LABEL" \
+  --limit "$LIMIT" \
+  --json number,title,body,labels,assignees)
+
+ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length')
+
+if [[ "$ISSUE_COUNT" -eq 0 ]]; then
+  echo -e "${YELLOW}  No open issues found with label '${LABEL}'${NC}"
+  exit 0
+fi
+
+echo -e "${GREEN}  Found $ISSUE_COUNT issue(s)${NC}"
+echo ""
+
+# ─── Phase 4: Display & Confirm ────────────────────────────────────────
+
+echo -e "${BOLD}Issues to process:${NC}"
+echo "┌──────┬────────────────────────────────────────────────────────────┐"
+printf "│ %-4s │ %-58s │\n" "#" "Title"
+echo "├──────┼────────────────────────────────────────────────────────────┤"
+
+echo "$ISSUES_JSON" | jq -r '.[] | "\(.number)\t\(.title)"' | while IFS=$'\t' read -r num title; do
+  # Truncate long titles
+  if [[ ${#title} -gt 56 ]]; then
+    title="${title:0:53}..."
+  fi
+  printf "│ %-4s │ %-58s │\n" "$num" "$title"
+done
+
+echo "└──────┴────────────────────────────────────────────────────────────┘"
+echo ""
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo -e "${CYAN}[DRY RUN] Would process $ISSUE_COUNT issue(s) with up to $MAX_PARALLEL parallel agent(s)${NC}"
+  echo -e "${CYAN}  Model: $MODEL | Budget: \$$BUDGET/agent | Base: $BASE_BRANCH${NC}"
+  exit 0
+fi
+
+if [[ "$AUTO_YES" != true ]]; then
+  echo "Process these issues? [all/numbers/cancel]"
+  read -rp "> " selection
+
+  case "$selection" in
+    all|a|"") ;;
+    cancel|c|n)
+      echo "Cancelled."
+      exit 0
+      ;;
+    *)
+      # Filter to selected issue numbers
+      SELECTED_NUMS=($selection)
+      FILTERED='[]'
+      for num in "${SELECTED_NUMS[@]}"; do
+        ITEM=$(echo "$ISSUES_JSON" | jq --argjson n "$num" '[.[] | select(.number == $n)]')
+        FILTERED=$(echo "$FILTERED" "$ITEM" | jq -s 'add')
+      done
+      ISSUES_JSON="$FILTERED"
+      ISSUE_COUNT=$(echo "$ISSUES_JSON" | jq 'length')
+      echo -e "  Selected $ISSUE_COUNT issue(s)"
+      ;;
+  esac
+fi
+
+# ─── Phase 5: Pre-checks ───────────────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}→ Phase 2: Pre-checks${NC}"
+
+# Check for duplicate branches/PRs
+SKIP_ISSUES='[]'
+PROCESS_ISSUES='[]'
+
+for i in $(seq 0 $((ISSUE_COUNT - 1))); do
+  ISSUE_NUM=$(echo "$ISSUES_JSON" | jq -r ".[$i].number")
+  ISSUE_TITLE=$(echo "$ISSUES_JSON" | jq -r ".[$i].title")
+  BRANCH_NAME="fix/issue-${ISSUE_NUM}"
+
+  # Check if branch already exists
+  if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}" 2>/dev/null; then
+    echo -e "  ${YELLOW}⊘ #${ISSUE_NUM}: Branch '${BRANCH_NAME}' already exists — skipping${NC}"
+    SKIP_ISSUES=$(echo "$SKIP_ISSUES" | jq --argjson n "$ISSUE_NUM" '. + [$n]')
+    continue
+  fi
+
+  # Check if PR already exists for this issue
+  EXISTING_PR=$(gh pr list "${REPO_FLAG[@]}" --state open --head "$BRANCH_NAME" --json number 2>/dev/null | jq 'length')
+  if [[ "$EXISTING_PR" -gt 0 ]]; then
+    echo -e "  ${YELLOW}⊘ #${ISSUE_NUM}: PR already exists for branch '${BRANCH_NAME}' — skipping${NC}"
+    SKIP_ISSUES=$(echo "$SKIP_ISSUES" | jq --argjson n "$ISSUE_NUM" '. + [$n]')
+    continue
+  fi
+
+  # Check claims
+  if [[ -f "$CLAIMS_FILE" ]]; then
+    CLAIMED=$(jq --argjson n "$ISSUE_NUM" 'has($n | tostring)' "$CLAIMS_FILE")
+    if [[ "$CLAIMED" == "true" ]]; then
+      CLAIM_TIME=$(jq -r --argjson n "$ISSUE_NUM" '.[$n | tostring].time' "$CLAIMS_FILE")
+      CLAIM_AGE=$(( $(date +%s) - CLAIM_TIME ))
+      # Claims expire after 1 hour
+      if [[ "$CLAIM_AGE" -lt 3600 ]]; then
+        echo -e "  ${YELLOW}⊘ #${ISSUE_NUM}: Already claimed ${CLAIM_AGE}s ago — skipping${NC}"
+        SKIP_ISSUES=$(echo "$SKIP_ISSUES" | jq --argjson n "$ISSUE_NUM" '. + [$n]')
+        continue
+      fi
+    fi
+  fi
+
+  PROCESS_ISSUES=$(echo "$PROCESS_ISSUES" | jq --argjson n "$ISSUE_NUM" '. + [$n]')
+  echo -e "  ${GREEN}✓ #${ISSUE_NUM}: ${ISSUE_TITLE}${NC}"
+done
+
+PROCESS_COUNT=$(echo "$PROCESS_ISSUES" | jq 'length')
+
+if [[ "$PROCESS_COUNT" -eq 0 ]]; then
+  echo -e "${YELLOW}  No issues to process after pre-checks${NC}"
+  exit 0
+fi
+
+echo -e "  ${BOLD}$PROCESS_COUNT issue(s) ready to process${NC}"
+
+# ─── Phase 6: Spawn Agents ─────────────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}→ Phase 3: Spawning agents (max parallel: ${MAX_PARALLEL})${NC}"
+
+# Read worker agent prompt
+WORKER_PROMPT_FILE="${REPO_ROOT}/.claude/agents/worker.md"
+if [[ ! -f "$WORKER_PROMPT_FILE" ]]; then
+  echo -e "${RED}ERROR: Worker agent definition not found at ${WORKER_PROMPT_FILE}${NC}" >&2
+  exit 1
+fi
+WORKER_PROMPT_BASE=$(cat "$WORKER_PROMPT_FILE")
+
+# Semaphore: track running agent count
+RUNNING=0
+RESULTS=()
+
+claim_issue() {
+  local issue_num="$1"
+  local claim_dir="${CLAIMS_FILE}.lock"
+
+  # Atomic lock using mkdir (works on macOS, no flock needed)
+  if ! mkdir "$claim_dir" 2>/dev/null; then
+    sleep 0.1
+    if ! mkdir "$claim_dir" 2>/dev/null; then
+      return 1
+    fi
+  fi
+
+  # Write claim
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson n "$issue_num" \
+     --argjson t "$(date +%s)" \
+     '.[$n | tostring] = {time: $t, pid: '$$'}' \
+     "$CLAIMS_FILE" > "$tmp" && mv "$tmp" "$CLAIMS_FILE"
+
+  rmdir "$claim_dir"
+  return 0
+}
+
+release_claim() {
+  local issue_num="$1"
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson n "$issue_num" 'del(.[$n | tostring])' "$CLAIMS_FILE" > "$tmp" && mv "$tmp" "$CLAIMS_FILE"
+}
+
+spawn_agent() {
+  local issue_num="$1"
+  local issue_title="$2"
+  local issue_body="$3"
+  local branch_name="fix/issue-${issue_num}"
+  local worktree_path="${WORKTREE_DIR}/${branch_name}"
+  local result_file="${RESULTS_DIR}/issue-${issue_num}.json"
+
+  # Claim the issue
+  if ! claim_issue "$issue_num"; then
+    echo -e "  ${YELLOW}⊘ #${issue_num}: Could not claim (locked by another process)${NC}"
+    return 1
+  fi
+
+  # Create worktree
+  echo -e "  ${CYAN}⚙ #${issue_num}: Creating worktree...${NC}"
+  if ! bash "${REPO_ROOT}/scripts/create-worktree" "$branch_name" "$BASE_BRANCH" >/dev/null 2>&1; then
+    echo -e "  ${RED}✗ #${issue_num}: Failed to create worktree${NC}"
+    release_claim "$issue_num"
+    return 1
+  fi
+  CREATED_WORKTREES+=("$worktree_path")
+
+  # Build the full prompt for this agent
+  local full_prompt
+  full_prompt="$(cat <<PROMPT
+${WORKER_PROMPT_BASE}
+
+---
+
+## Your Assignment
+
+**Issue #${issue_num}: ${issue_title}**
+
+${issue_body}
+
+## Important Context
+
+- You are working in worktree: ${worktree_path}
+- Your branch: ${branch_name}
+- Base branch: ${BASE_BRANCH}
+- Create a PR that references: fixes #${issue_num}
+- Follow ALL rules in AGENTS.md
+PROMPT
+)"
+
+  # Spawn Claude agent in background
+  echo -e "  ${GREEN}▶ #${issue_num}: Agent spawned (model: ${MODEL}, budget: \$${BUDGET})${NC}"
+
+  (
+    cd "$worktree_path"
+    claude -p "$full_prompt" \
+      --dangerously-skip-permissions \
+      --model "$MODEL" \
+      --max-budget-usd "$BUDGET" \
+      --output-format json \
+      > "$result_file" 2>&1
+  ) &
+
+  local pid=$!
+  SPAWNED_PIDS+=("$pid")
+  RESULTS+=("${issue_num}:${pid}:${result_file}")
+
+  return 0
+}
+
+# Process issues with semaphore-controlled parallelism
+for i in $(seq 0 $((PROCESS_COUNT - 1))); do
+  ISSUE_NUM=$(echo "$PROCESS_ISSUES" | jq -r ".[$i]")
+
+  # Get full issue data
+  ISSUE_DATA=$(echo "$ISSUES_JSON" | jq --argjson n "$ISSUE_NUM" '.[] | select(.number == $n)')
+  ISSUE_TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+  ISSUE_BODY=$(echo "$ISSUE_DATA" | jq -r '.body // "No description provided."')
+
+  # Wait if at max parallel capacity
+  while [[ $RUNNING -ge $MAX_PARALLEL ]]; do
+    # Wait for any child to finish
+    wait -n 2>/dev/null || true
+    RUNNING=$((RUNNING - 1))
+  done
+
+  spawn_agent "$ISSUE_NUM" "$ISSUE_TITLE" "$ISSUE_BODY" || true
+  RUNNING=$((RUNNING + 1))
+done
+
+# ─── Phase 7: Monitor & Report ─────────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}→ Phase 4: Waiting for agents to complete...${NC}"
+
+# Wait for all agents
+for pid in "${SPAWNED_PIDS[@]}"; do
+  wait "$pid" 2>/dev/null || true
+done
+
+echo ""
+echo -e "${BOLD}═══ Results ═══${NC}"
+echo ""
+
+SUCCESS=0
+FAILURE=0
+
+echo "┌──────┬────────┬──────────────────────────────────────────────────┐"
+printf "│ %-4s │ %-6s │ %-48s │\n" "#" "Status" "Details"
+echo "├──────┼────────┼──────────────────────────────────────────────────┤"
+
+for entry in "${RESULTS[@]}"; do
+  IFS=':' read -r issue_num pid result_file <<< "$entry"
+
+  if [[ -f "$result_file" ]]; then
+    # Check if the result file has valid JSON with a result
+    if jq -e '.result' "$result_file" >/dev/null 2>&1; then
+      printf "│ %-4s │ ${GREEN}%-6s${NC} │ %-48s │\n" "$issue_num" "OK" "Agent completed successfully"
+      SUCCESS=$((SUCCESS + 1))
+    elif jq -e '.error' "$result_file" >/dev/null 2>&1; then
+      ERROR_MSG=$(jq -r '.error' "$result_file" | head -c 46)
+      printf "│ %-4s │ ${RED}%-6s${NC} │ %-48s │\n" "$issue_num" "FAIL" "$ERROR_MSG"
+      FAILURE=$((FAILURE + 1))
+    else
+      printf "│ %-4s │ ${YELLOW}%-6s${NC} │ %-48s │\n" "$issue_num" "????" "Unexpected output format"
+      FAILURE=$((FAILURE + 1))
+    fi
+  else
+    printf "│ %-4s │ ${RED}%-6s${NC} │ %-48s │\n" "$issue_num" "FAIL" "No result file produced"
+    FAILURE=$((FAILURE + 1))
+  fi
+
+  # Release claim
+  release_claim "$issue_num"
+done
+
+echo "└──────┴────────┴──────────────────────────────────────────────────┘"
+echo ""
+echo -e "${BOLD}Summary: ${GREEN}${SUCCESS} succeeded${NC}, ${RED}${FAILURE} failed${NC} out of ${#RESULTS[@]} total${NC}"
+
+# Clean up worktrees (only successful ones; keep failed for debugging)
+echo ""
+echo -e "${BLUE}→ Cleaning up worktrees...${NC}"
+for wt in "${CREATED_WORKTREES[@]}"; do
+  if [[ -d "$wt" ]]; then
+    BRANCH=$(basename "$wt")
+    # Check if PR was created for this worktree's branch
+    PR_EXISTS=$(gh pr list "${REPO_FLAG[@]}" --state open --head "fix/$BRANCH" --json number 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$PR_EXISTS" -gt 0 ]]; then
+      git worktree remove --force "$wt" 2>/dev/null || true
+      echo -e "  ${GREEN}✓ Removed worktree: $wt (PR created)${NC}"
+    else
+      echo -e "  ${YELLOW}⊘ Keeping worktree: $wt (no PR — inspect for debugging)${NC}"
+    fi
+  fi
+done
+
+# Clear the cleanup trap's worktree list since we handled them
+CREATED_WORKTREES=()
+
+# Check for created PRs
+echo ""
+echo -e "${BLUE}→ Created PRs:${NC}"
+for entry in "${RESULTS[@]}"; do
+  IFS=':' read -r issue_num pid result_file <<< "$entry"
+  BRANCH_NAME="fix/issue-${issue_num}"
+  PR_INFO=$(gh pr list "${REPO_FLAG[@]}" --state open --head "$BRANCH_NAME" --json number,url 2>/dev/null || echo '[]')
+  PR_COUNT=$(echo "$PR_INFO" | jq 'length')
+  if [[ "$PR_COUNT" -gt 0 ]]; then
+    PR_URL=$(echo "$PR_INFO" | jq -r '.[0].url')
+    echo -e "  ${GREEN}PR for #${issue_num}: ${PR_URL}${NC}"
+  fi
+done
+
+echo ""
+echo -e "${GREEN}✓ Orchestrator complete${NC}"
+
+# Watch mode: re-run after interval
+if [[ "$WATCH" == true ]]; then
+  echo ""
+  echo -e "${CYAN}Watch mode: sleeping ${WATCH_INTERVAL}s before next run...${NC}"
+  echo "  Press Ctrl-C to stop."
+  sleep "$WATCH_INTERVAL"
+  exec "$0" "${ORIGINAL_ARGS[@]:-}"
+fi

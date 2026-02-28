@@ -1,0 +1,55 @@
+name: PR Size Labels
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label-size:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label PR by size
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { additions, deletions } = context.payload.pull_request;
+            const total = additions + deletions;
+
+            const sizeLabels = {
+              'size/XS': total <= 10,
+              'size/S':  total > 10  && total <= 50,
+              'size/M':  total > 50  && total <= 200,
+              'size/L':  total > 200 && total <= 500,
+              'size/XL': total > 500,
+            };
+
+            const newLabel = Object.entries(sizeLabels).find(([, match]) => match)?.[0];
+            if (!newLabel) return;
+
+            const allSizeLabels = Object.keys(sizeLabels);
+
+            // Remove old size labels
+            const currentLabels = context.payload.pull_request.labels.map(l => l.name);
+            for (const label of currentLabels) {
+              if (allSizeLabels.includes(label) && label !== newLabel) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: label,
+                });
+              }
+            }
+
+            // Add new size label
+            if (!currentLabels.includes(newLabel)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [newLabel],
+              });
+            }

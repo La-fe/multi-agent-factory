@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Batch PR Review ───────────────────────────────────────────────────
+# Spawns reviewer agents to review open PRs in parallel.
+#
+# Usage:
+#   scripts/review-prs              # Review all open PRs
+#   scripts/review-prs 5 7          # Review specific PRs
+#   scripts/review-prs --auto-merge # Review + auto-merge passing PRs
+# ────────────────────────────────────────────────────────────────────────
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+RESULTS_DIR="${REPO_ROOT}/.claude/results"
+
+# ─── Colors ─────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Parse Args ─────────────────────────────────────────────────────────
+
+AUTO_MERGE=false
+MODEL="sonnet"
+BUDGET="0.50"
+PR_NUMBERS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --auto-merge) AUTO_MERGE=true; shift ;;
+    --model)      MODEL="$2"; shift 2 ;;
+    --budget)     BUDGET="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: scripts/review-prs [PR numbers...] [--auto-merge] [--model M] [--budget N]"
+      exit 0
+      ;;
+    *)
+      PR_NUMBERS+=("$1"); shift ;;
+  esac
+done
+
+# ─── Preflight ──────────────────────────────────────────────────────────
+
+for tool in gh jq claude; do
+  if ! command -v "$tool" &>/dev/null; then
+    echo -e "${RED}ERROR: '$tool' is not installed${NC}" >&2
+    exit 1
+  fi
+done
+
+if ! gh auth status &>/dev/null; then
+  echo -e "${RED}ERROR: Not authenticated with GitHub${NC}" >&2
+  exit 1
+fi
+
+mkdir -p "$RESULTS_DIR"
+
+# ─── Fetch PRs ──────────────────────────────────────────────────────────
+
+echo -e "${BOLD}═══ Batch PR Review ═══${NC}"
+echo ""
+
+if [[ ${#PR_NUMBERS[@]} -gt 0 ]]; then
+  # Review specific PRs
+  PRS_JSON='[]'
+  for num in "${PR_NUMBERS[@]}"; do
+    PR_DATA=$(gh pr view "$num" --json number,title,headRefName,url 2>/dev/null || echo '{}')
+    if [[ $(echo "$PR_DATA" | jq 'has("number")') == "true" ]]; then
+      PRS_JSON=$(echo "$PRS_JSON" | jq --argjson pr "$PR_DATA" '. + [$pr]')
+    else
+      echo -e "${YELLOW}WARNING: PR #${num} not found${NC}"
+    fi
+  done
+else
+  # Review all open PRs
+  PRS_JSON=$(gh pr list --state open --json number,title,headRefName,url)
+fi
+
+PR_COUNT=$(echo "$PRS_JSON" | jq 'length')
+
+if [[ "$PR_COUNT" -eq 0 ]]; then
+  echo -e "${YELLOW}No open PRs to review${NC}"
+  exit 0
+fi
+
+echo -e "${GREEN}Found $PR_COUNT PR(s) to review${NC}"
+echo ""
+
+# ─── Load Reviewer Prompt ──────────────────────────────────────────────
+
+REVIEWER_PROMPT_FILE="${REPO_ROOT}/.claude/agents/reviewer.md"
+if [[ ! -f "$REVIEWER_PROMPT_FILE" ]]; then
+  echo -e "${RED}ERROR: Reviewer agent definition not found at ${REVIEWER_PROMPT_FILE}${NC}" >&2
+  exit 1
+fi
+REVIEWER_PROMPT_BASE=$(cat "$REVIEWER_PROMPT_FILE")
+
+# ─── Spawn Review Agents ───────────────────────────────────────────────
+
+PIDS=()
+ENTRIES=()
+
+for i in $(seq 0 $((PR_COUNT - 1))); do
+  PR_NUM=$(echo "$PRS_JSON" | jq -r ".[$i].number")
+  PR_TITLE=$(echo "$PRS_JSON" | jq -r ".[$i].title")
+  PR_URL=$(echo "$PRS_JSON" | jq -r ".[$i].url")
+  RESULT_FILE="${RESULTS_DIR}/review-pr-${PR_NUM}.json"
+
+  echo -e "${CYAN}▶ Reviewing PR #${PR_NUM}: ${PR_TITLE}${NC}"
+
+  FULL_PROMPT="$(cat <<PROMPT
+${REVIEWER_PROMPT_BASE}
+
+---
+
+## Your Assignment
+
+Review PR #${PR_NUM}: "${PR_TITLE}"
+
+Use these commands to inspect the PR:
+\`\`\`bash
+gh pr view ${PR_NUM} --json title,body,baseRefName,headRefName,files,additions,deletions
+gh pr diff ${PR_NUM}
+\`\`\`
+
+Then read all changed files in full and provide your structured review.
+PROMPT
+)"
+
+  (
+    cd "$REPO_ROOT"
+    claude -p "$FULL_PROMPT" \
+      --dangerously-skip-permissions \
+      --model "$MODEL" \
+      --max-budget-usd "$BUDGET" \
+      --output-format json \
+      > "$RESULT_FILE" 2>&1
+  ) &
+
+  PIDS+=("$!")
+  ENTRIES+=("${PR_NUM}:${RESULT_FILE}")
+done
+
+# ─── Wait & Collect Results ─────────────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}→ Waiting for reviews to complete...${NC}"
+
+for pid in "${PIDS[@]}"; do
+  wait "$pid" 2>/dev/null || true
+done
+
+echo ""
+echo -e "${BOLD}═══ Review Results ═══${NC}"
+echo ""
+
+READY_PRS=()
+
+for entry in "${ENTRIES[@]}"; do
+  IFS=':' read -r pr_num result_file <<< "$entry"
+
+  echo -e "${BOLD}PR #${pr_num}:${NC}"
+
+  if [[ -f "$result_file" ]]; then
+    RESULT_TEXT=$(jq -r '.result // .error // "No output"' "$result_file" 2>/dev/null || cat "$result_file")
+    echo "$RESULT_TEXT" | head -50
+    echo ""
+
+    # Check for READY verdict
+    if echo "$RESULT_TEXT" | grep -qi "READY FOR /landpr"; then
+      READY_PRS+=("$pr_num")
+      echo -e "  ${GREEN}→ Verdict: READY FOR /landpr${NC}"
+    elif echo "$RESULT_TEXT" | grep -qi "NEEDS WORK"; then
+      echo -e "  ${YELLOW}→ Verdict: NEEDS WORK${NC}"
+    elif echo "$RESULT_TEXT" | grep -qi "NEEDS DISCUSSION"; then
+      echo -e "  ${CYAN}→ Verdict: NEEDS DISCUSSION${NC}"
+    fi
+  else
+    echo -e "  ${RED}No result file produced${NC}"
+  fi
+
+  echo "────────────────────────────────────────────────────────"
+  echo ""
+done
+
+# ─── Auto-merge if requested ────────────────────────────────────────────
+
+if [[ "$AUTO_MERGE" == true && ${#READY_PRS[@]} -gt 0 ]]; then
+  echo -e "${BLUE}→ Auto-merging ${#READY_PRS[@]} approved PR(s)...${NC}"
+
+  for pr_num in "${READY_PRS[@]}"; do
+    echo -e "  ${CYAN}Merging PR #${pr_num}...${NC}"
+
+    if gh pr merge "$pr_num" --squash --delete-branch 2>/dev/null; then
+      echo -e "  ${GREEN}✓ PR #${pr_num} merged${NC}"
+    else
+      echo -e "  ${RED}✗ PR #${pr_num} merge failed${NC}"
+    fi
+  done
+fi
+
+# ─── Summary ────────────────────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}Summary:${NC}"
+echo "  Total reviewed: $PR_COUNT"
+echo "  Ready to merge: ${#READY_PRS[@]}"
+if [[ ${#READY_PRS[@]} -gt 0 && "$AUTO_MERGE" != true ]]; then
+  echo ""
+  echo "  To merge approved PRs, run:"
+  for pr_num in "${READY_PRS[@]}"; do
+    echo "    gh pr merge ${pr_num} --squash --delete-branch"
+  done
+fi
+echo ""
+echo -e "${GREEN}✓ Review complete${NC}"

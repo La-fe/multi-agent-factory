@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─── Usage ──────────────────────────────────────────────────────────────
+# scripts/create-worktree <branch-name> [base-branch]
+#
+# Creates a git worktree under .worktrees/<branch-name>, installs
+# dependencies, and sets up git hooks. Designed for multi-agent parallel
+# development where each agent gets its own isolated worktree.
+# ────────────────────────────────────────────────────────────────────────
+
+WORKTREE_DIR=".worktrees"
+
+usage() {
+  echo "Usage: scripts/create-worktree <branch-name> [base-branch]"
+  echo ""
+  echo "  branch-name   Name for the new branch (e.g., fix/issue-42)"
+  echo "  base-branch   Branch to base off of (default: main)"
+  echo ""
+  echo "Creates .worktrees/<branch-name> with dependencies and hooks installed."
+  exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+fi
+
+BRANCH="$1"
+BASE="${2:-main}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TARGET="${REPO_ROOT}/${WORKTREE_DIR}/${BRANCH}"
+
+# ─── Preflight ──────────────────────────────────────────────────────────
+
+if [[ -d "$TARGET" ]]; then
+  echo "ERROR: Worktree already exists at ${TARGET}"
+  exit 1
+fi
+
+# Ensure base branch is up to date
+if git show-ref --verify --quiet "refs/heads/${BASE}"; then
+  echo "→ Using local branch '${BASE}' as base"
+else
+  echo "ERROR: Base branch '${BASE}' does not exist"
+  exit 1
+fi
+
+# ─── Create Worktree ────────────────────────────────────────────────────
+
+echo "→ Creating worktree: ${TARGET}"
+mkdir -p "$(dirname "$TARGET")"
+git worktree add -b "$BRANCH" "$TARGET" "$BASE"
+
+# ─── Install Dependencies ──────────────────────────────────────────────
+
+echo "→ Installing dependencies..."
+(cd "$TARGET" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install)
+
+# ─── Setup Hooks ────────────────────────────────────────────────────────
+
+echo "→ Setting up git hooks..."
+(cd "$TARGET" && bash scripts/setup-hooks)
+
+# ─── Done ───────────────────────────────────────────────────────────────
+
+echo ""
+echo "✓ Worktree ready at: ${TARGET}"
+echo "  Branch: ${BRANCH} (based on ${BASE})"
+echo ""
+echo "  cd ${TARGET}"
