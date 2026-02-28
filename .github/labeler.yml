@@ -1,0 +1,40 @@
+# Path-based auto-labeling for PRs
+# Used by: .github/workflows/labeler.yml
+# Docs: https://github.com/actions/labeler
+
+"area:api":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/routes/**"
+          - "src/app.ts"
+
+"area:scripts":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "scripts/**"
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - ".github/labeler.yml"
+          - ".github/ISSUE_TEMPLATE/**"
+
+"area:agents":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".claude/agents/**"
+          - ".claude/prompts/**"
+          - ".claude/settings.json"
+
+"area:public":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/public/**"
+          - "public/**"
+
+"docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "docs/**"
