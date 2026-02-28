@@ -134,6 +134,7 @@ PROMPT
 
   (
     cd "$REPO_ROOT"
+    unset CLAUDECODE
     claude -p "$FULL_PROMPT" \
       --dangerously-skip-permissions \
       --model "$MODEL" \

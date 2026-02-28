@@ -400,6 +400,7 @@ PROMPT
 
   (
     cd "$worktree_path"
+    unset CLAUDECODE
     claude -p "$full_prompt" \
       --dangerously-skip-permissions \
       --model "$MODEL" \
