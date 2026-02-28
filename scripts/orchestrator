@@ -362,7 +362,9 @@ if [[ ! -f "$WORKER_PROMPT_FILE" ]]; then
   echo -e "${RED}ERROR: Worker agent definition not found at ${WORKER_PROMPT_FILE}${NC}" >&2
   exit 1
 fi
-WORKER_PROMPT_BASE=$(cat "$WORKER_PROMPT_FILE")
+# Strip YAML frontmatter (--- ... ---) if present — prevents claude -p from
+# interpreting leading '---' as a command-line flag
+WORKER_PROMPT_BASE=$(sed '/^---$/,/^---$/d' "$WORKER_PROMPT_FILE")
 
 # Semaphore: track running agent count
 RUNNING=0

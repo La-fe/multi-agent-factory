@@ -111,7 +111,8 @@ if [[ ! -f "$REVIEWER_PROMPT_FILE" ]]; then
   echo -e "${RED}ERROR: Reviewer agent definition not found at ${REVIEWER_PROMPT_FILE}${NC}" >&2
   exit 1
 fi
-REVIEWER_PROMPT_BASE=$(cat "$REVIEWER_PROMPT_FILE")
+# Strip YAML frontmatter (--- ... ---) if present
+REVIEWER_PROMPT_BASE=$(sed '/^---$/,/^---$/d' "$REVIEWER_PROMPT_FILE")
 
 # ─── Spawn Review Agents ───────────────────────────────────────────────
 
