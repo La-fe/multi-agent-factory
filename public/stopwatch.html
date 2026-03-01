@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stopwatch</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #0f0f13;
+      color: #e2e2e9;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 500;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: #8888a8;
+      margin-bottom: 2.5rem;
+    }
+
+    .display {
+      font-size: clamp(3.5rem, 12vw, 6rem);
+      font-weight: 200;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      color: #f0f0ff;
+      background: #16161e;
+      border: 1px solid #2a2a3a;
+      border-radius: 1.25rem;
+      padding: 1.5rem 2.5rem;
+      min-width: 380px;
+      text-align: center;
+      margin-bottom: 2rem;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    }
+
+    .display .ms {
+      color: #6868a0;
+      font-size: 0.65em;
+    }
+
+    .controls {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    button {
+      padding: 0.75rem 2rem;
+      font-size: 0.95rem;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      border: none;
+      border-radius: 0.625rem;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+      min-width: 110px;
+    }
+
+    button:active { transform: scale(0.97); }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
+    button:disabled:active { transform: none; }
+
+    #btn-start {
+      background: #3d7aed;
+      color: #fff;
+    }
+    #btn-start:not(:disabled):hover { background: #4f89fa; }
+    #btn-start.running {
+      background: #e05c5c;
+    }
+    #btn-start.running:not(:disabled):hover { background: #f06e6e; }
+
+    #btn-lap {
+      background: #2a2a3a;
+      color: #c0c0d8;
+      border: 1px solid #3a3a50;
+    }
+    #btn-lap:not(:disabled):hover { background: #353548; }
+
+    #btn-reset {
+      background: #2a2a3a;
+      color: #c0c0d8;
+      border: 1px solid #3a3a50;
+    }
+    #btn-reset:not(:disabled):hover { background: #353548; }
+
+    .laps-section {
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .laps-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #5a5a7a;
+      padding: 0 0.25rem 0.5rem;
+      border-bottom: 1px solid #1e1e2e;
+      margin-bottom: 0.5rem;
+    }
+
+    .laps-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      max-height: 320px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #3a3a50 transparent;
+    }
+
+    .laps-list::-webkit-scrollbar { width: 4px; }
+    .laps-list::-webkit-scrollbar-thumb { background: #3a3a50; border-radius: 2px; }
+
+    .lap-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0.25rem;
+      border-bottom: 1px solid #1a1a28;
+      font-variant-numeric: tabular-nums;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .lap-item:last-child { border-bottom: none; }
+
+    .lap-num {
+      color: #5a5a7a;
+      font-size: 0.85rem;
+      min-width: 2.5rem;
+    }
+
+    .lap-split {
+      color: #a0a0c0;
+      font-size: 0.9rem;
+    }
+
+    .lap-total {
+      color: #e2e2e9;
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+
+    .lap-item.fastest .lap-total { color: #5dce8a; }
+    .lap-item.slowest .lap-total { color: #e0705c; }
+
+    .laps-empty {
+      text-align: center;
+      color: #3a3a5a;
+      font-size: 0.9rem;
+      padding: 2rem 0;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Stopwatch</h1>
+
+  <div class="display" id="display">
+    <span id="time-main">00:00</span><span class="ms">.<span id="time-ms">00</span></span>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start">Start</button>
+    <button id="btn-lap" disabled>Lap</button>
+    <button id="btn-reset" disabled>Reset</button>
+  </div>
+
+  <div class="laps-section" id="laps-section" hidden>
+    <div class="laps-header">
+      <span>Lap</span>
+      <span>Split</span>
+      <span>Total</span>
+    </div>
+    <ul class="laps-list" id="laps-list"></ul>
+  </div>
+  <div class="laps-empty" id="laps-empty">No laps yet</div>
+
+  <script>
+    const btnStart  = document.getElementById('btn-start');
+    const btnLap    = document.getElementById('btn-lap');
+    const btnReset  = document.getElementById('btn-reset');
+    const timeMain  = document.getElementById('time-main');
+    const timeMs    = document.getElementById('time-ms');
+    const lapsList  = document.getElementById('laps-list');
+    const lapsSection = document.getElementById('laps-section');
+    const lapsEmpty = document.getElementById('laps-empty');
+
+    let running      = false;
+    let startTime    = 0;   // performance.now() at start
+    let elapsed      = 0;   // ms accumulated before last pause
+    let rafId        = null;
+    let laps         = [];  // array of { total, split } in ms
+    let lastLapTotal = 0;
+
+    // Format elapsed ms → "MM:SS"
+    function formatMain(ms) {
+      const totalSec = Math.floor(ms / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }
+
+    // Format ms fraction → 2-digit centiseconds
+    function formatCs(ms) {
+      return String(Math.floor((ms % 1000) / 10)).padStart(2, '0');
+    }
+
+    function updateDisplay(ms) {
+      timeMain.textContent = formatMain(ms);
+      timeMs.textContent   = formatCs(ms);
+    }
+
+    function tick() {
+      const now = elapsed + (performance.now() - startTime);
+      updateDisplay(now);
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function start() {
+      running = true;
+      startTime = performance.now();
+      btnStart.textContent = 'Stop';
+      btnStart.classList.add('running');
+      btnLap.disabled   = false;
+      btnReset.disabled = false;
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function stop() {
+      running = false;
+      elapsed += performance.now() - startTime;
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      btnStart.textContent = 'Start';
+      btnStart.classList.remove('running');
+      btnLap.disabled = true;
+    }
+
+    function reset() {
+      stop();
+      elapsed      = 0;
+      laps         = [];
+      lastLapTotal = 0;
+      updateDisplay(0);
+      btnReset.disabled = true;
+      btnLap.disabled   = true;
+      lapsList.innerHTML = '';
+      lapsSection.hidden = true;
+      lapsEmpty.hidden   = false;
+    }
+
+    function recordLap() {
+      const total = elapsed + (performance.now() - startTime);
+      const split = total - lastLapTotal;
+      lastLapTotal = total;
+      laps.push({ total, split });
+      renderLaps();
+    }
+
+    function renderLaps() {
+      if (laps.length === 0) {
+        lapsSection.hidden = true;
+        lapsEmpty.hidden   = false;
+        return;
+      }
+      lapsSection.hidden = false;
+      lapsEmpty.hidden   = true;
+
+      // Find fastest/slowest split indices (only when 2+ laps)
+      let fastestIdx = -1, slowestIdx = -1;
+      if (laps.length >= 2) {
+        let minSplit = Infinity, maxSplit = -Infinity;
+        laps.forEach((l, i) => {
+          if (l.split < minSplit) { minSplit = l.split; fastestIdx = i; }
+          if (l.split > maxSplit) { maxSplit = l.split; slowestIdx = i; }
+        });
+      }
+
+      lapsList.innerHTML = '';
+      // Show most recent lap at top
+      for (let i = laps.length - 1; i >= 0; i--) {
+        const { total, split } = laps[i];
+        const li = document.createElement('li');
+        li.className = 'lap-item';
+        if (i === fastestIdx) li.classList.add('fastest');
+        if (i === slowestIdx) li.classList.add('slowest');
+
+        const lapNum = document.createElement('span');
+        lapNum.className   = 'lap-num';
+        lapNum.textContent = 'Lap ' + (i + 1);
+
+        const lapSplit = document.createElement('span');
+        lapSplit.className   = 'lap-split';
+        lapSplit.textContent = formatMain(split) + '.' + formatCs(split);
+
+        const lapTotal = document.createElement('span');
+        lapTotal.className   = 'lap-total';
+        lapTotal.textContent = formatMain(total) + '.' + formatCs(total);
+
+        li.appendChild(lapNum);
+        li.appendChild(lapSplit);
+        li.appendChild(lapTotal);
+        lapsList.appendChild(li);
+      }
+    }
+
+    btnStart.addEventListener('click', () => {
+      if (running) stop(); else start();
+    });
+
+    btnLap.addEventListener('click', recordLap);
+    btnReset.addEventListener('click', reset);
+
+    // Initial render
+    updateDisplay(0);
+    lapsEmpty.hidden = false;
+  </script>
+</body>
+</html>
