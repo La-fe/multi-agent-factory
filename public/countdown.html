@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Countdown Timer</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: #e0e0e0;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 300;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      margin-bottom: 2.5rem;
+      color: #a8d8f0;
+    }
+
+    /* Input section */
+    .input-section {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+      align-items: flex-end;
+    }
+
+    .time-input-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .time-input-group label {
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #a8d8f0;
+      opacity: 0.8;
+    }
+
+    .time-input-group input {
+      width: 5rem;
+      padding: 0.6rem 0.4rem;
+      text-align: center;
+      font-size: 1.4rem;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(168, 216, 240, 0.3);
+      border-radius: 8px;
+      color: #e0e0e0;
+      outline: none;
+      transition: border-color 0.2s, background 0.2s;
+      -moz-appearance: textfield;
+    }
+
+    .time-input-group input::-webkit-inner-spin-button,
+    .time-input-group input::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+    }
+
+    .time-input-group input:focus {
+      border-color: #a8d8f0;
+      background: rgba(168, 216, 240, 0.12);
+    }
+
+    .time-separator {
+      font-size: 1.8rem;
+      font-weight: 300;
+      color: #a8d8f0;
+      padding-bottom: 0.5rem;
+      opacity: 0.6;
+    }
+
+    /* Display section */
+    .display-section {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .digit-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .digit-group .label {
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #a8d8f0;
+      opacity: 0.7;
+    }
+
+    .digit {
+      font-size: 5rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.05em;
+      color: #ffffff;
+      text-shadow: 0 0 30px rgba(168, 216, 240, 0.5);
+      min-width: 3ch;
+      text-align: center;
+      transition: color 0.3s, text-shadow 0.3s;
+    }
+
+    .digit.urgent {
+      color: #ff6b6b;
+      text-shadow: 0 0 30px rgba(255, 107, 107, 0.6);
+      animation: pulse 0.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse {
+      from { opacity: 1; }
+      to   { opacity: 0.7; }
+    }
+
+    .colon {
+      font-size: 4.5rem;
+      font-weight: 300;
+      color: #a8d8f0;
+      opacity: 0.6;
+      padding-bottom: 1.8rem;
+      line-height: 1;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      gap: 1rem;
+    }
+
+    button {
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.2s, opacity 0.2s;
+      outline: none;
+    }
+
+    button:active {
+      transform: scale(0.97);
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    #btn-start {
+      background: linear-gradient(135deg, #4caf82, #2e9e6a);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(76, 175, 130, 0.4);
+    }
+
+    #btn-start:hover:not(:disabled) {
+      box-shadow: 0 6px 20px rgba(76, 175, 130, 0.6);
+    }
+
+    #btn-pause {
+      background: linear-gradient(135deg, #e8a944, #c88a20);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(232, 169, 68, 0.4);
+    }
+
+    #btn-pause:hover:not(:disabled) {
+      box-shadow: 0 6px 20px rgba(232, 169, 68, 0.6);
+    }
+
+    #btn-reset {
+      background: linear-gradient(135deg, #e05252, #c02828);
+      color: #fff;
+      box-shadow: 0 4px 15px rgba(224, 82, 82, 0.4);
+    }
+
+    #btn-reset:hover:not(:disabled) {
+      box-shadow: 0 6px 20px rgba(224, 82, 82, 0.6);
+    }
+
+    /* Status message */
+    #status {
+      margin-top: 1.5rem;
+      font-size: 0.95rem;
+      letter-spacing: 0.08em;
+      color: #a8d8f0;
+      min-height: 1.4em;
+      text-align: center;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    #status.visible {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <h1>Countdown Timer</h1>
+
+  <div class="input-section">
+    <div class="time-input-group">
+      <label for="input-hours">Hours</label>
+      <input type="number" id="input-hours" min="0" max="99" value="0" placeholder="0" />
+    </div>
+    <span class="time-separator">:</span>
+    <div class="time-input-group">
+      <label for="input-minutes">Minutes</label>
+      <input type="number" id="input-minutes" min="0" max="59" value="0" placeholder="0" />
+    </div>
+    <span class="time-separator">:</span>
+    <div class="time-input-group">
+      <label for="input-seconds">Seconds</label>
+      <input type="number" id="input-seconds" min="0" max="59" value="10" placeholder="0" />
+    </div>
+  </div>
+
+  <div class="display-section">
+    <div class="digit-group">
+      <div class="digit" id="display-hours">00</div>
+      <span class="label">Hours</span>
+    </div>
+    <div class="colon">:</div>
+    <div class="digit-group">
+      <div class="digit" id="display-minutes">00</div>
+      <span class="label">Minutes</span>
+    </div>
+    <div class="colon">:</div>
+    <div class="digit-group">
+      <div class="digit" id="display-seconds">10</div>
+      <span class="label">Seconds</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start">Start</button>
+    <button id="btn-pause" disabled>Pause</button>
+    <button id="btn-reset">Reset</button>
+  </div>
+
+  <div id="status"></div>
+
+  <script>
+    'use strict';
+
+    const inputHours   = document.getElementById('input-hours');
+    const inputMinutes = document.getElementById('input-minutes');
+    const inputSeconds = document.getElementById('input-seconds');
+
+    const displayHours   = document.getElementById('display-hours');
+    const displayMinutes = document.getElementById('display-minutes');
+    const displaySeconds = document.getElementById('display-seconds');
+
+    const btnStart = document.getElementById('btn-start');
+    const btnPause = document.getElementById('btn-pause');
+    const btnReset = document.getElementById('btn-reset');
+    const statusEl = document.getElementById('status');
+
+    let totalSeconds = 0;   // remaining time in seconds
+    let intervalId   = null; // setInterval handle
+    let running      = false;
+
+    /** Clamp value between min and max */
+    function clamp(val, min, max) {
+      return Math.max(min, Math.min(max, val));
+    }
+
+    /** Zero-pad a number to 2 digits */
+    function pad(n) {
+      return String(n).padStart(2, '0');
+    }
+
+    /** Read inputs and return total seconds */
+    function readInputSeconds() {
+      const h = clamp(parseInt(inputHours.value,   10) || 0,  0, 99);
+      const m = clamp(parseInt(inputMinutes.value, 10) || 0,  0, 59);
+      const s = clamp(parseInt(inputSeconds.value, 10) || 0,  0, 59);
+      return h * 3600 + m * 60 + s;
+    }
+
+    /** Update the large countdown display from totalSeconds */
+    function updateDisplay() {
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60);
+      const s = totalSeconds % 60;
+
+      displayHours.textContent   = pad(h);
+      displayMinutes.textContent = pad(m);
+      displaySeconds.textContent = pad(s);
+
+      // Highlight urgent (≤ 10 s remaining and timer is running)
+      const urgent = running && totalSeconds > 0 && totalSeconds <= 10;
+      [displayHours, displayMinutes, displaySeconds].forEach(el => {
+        el.classList.toggle('urgent', urgent);
+      });
+    }
+
+    /** Sync display from inputs (used before starting) */
+    function syncDisplayFromInputs() {
+      totalSeconds = readInputSeconds();
+      updateDisplay();
+    }
+
+    /** Show a temporary status message */
+    function showStatus(msg, duration = 3000) {
+      statusEl.textContent = msg;
+      statusEl.classList.add('visible');
+      clearTimeout(showStatus._timer);
+      showStatus._timer = setTimeout(() => {
+        statusEl.classList.remove('visible');
+      }, duration);
+    }
+
+    /** Tick — called every second while running */
+    function tick() {
+      if (totalSeconds <= 0) {
+        finish();
+        return;
+      }
+      totalSeconds -= 1;
+      updateDisplay();
+      if (totalSeconds === 0) {
+        finish();
+      }
+    }
+
+    /** Called when timer reaches zero */
+    function finish() {
+      clearInterval(intervalId);
+      intervalId = null;
+      running = false;
+
+      // Remove urgent styling
+      [displayHours, displayMinutes, displaySeconds].forEach(el => {
+        el.classList.remove('urgent');
+      });
+
+      setButtonState('idle');
+      showStatus('Time\'s up! ⏰', 5000);
+
+      // Alert — slight delay so the UI updates first
+      setTimeout(() => {
+        alert('Time\'s up! ⏰');
+      }, 50);
+    }
+
+    /** Set button enabled/disabled states based on timer state */
+    function setButtonState(state) {
+      // state: 'idle' | 'running' | 'paused'
+      btnStart.disabled = (state === 'running');
+      btnPause.disabled = (state !== 'running');
+    }
+
+    // ──────────────────────────────────────────────
+    // Button handlers
+    // ──────────────────────────────────────────────
+
+    btnStart.addEventListener('click', () => {
+      if (running) return;
+
+      // If paused mid-run, resume; otherwise read fresh input
+      if (totalSeconds === 0 || !intervalId) {
+        totalSeconds = readInputSeconds();
+        if (totalSeconds === 0) {
+          showStatus('Please set a duration first.');
+          return;
+        }
+        updateDisplay();
+      }
+
+      running = true;
+      setButtonState('running');
+      intervalId = setInterval(tick, 1000);
+    });
+
+    btnPause.addEventListener('click', () => {
+      if (!running) return;
+      clearInterval(intervalId);
+      intervalId = null;
+      running = false;
+      setButtonState('paused');
+      showStatus('Paused');
+    });
+
+    btnReset.addEventListener('click', () => {
+      clearInterval(intervalId);
+      intervalId = null;
+      running = false;
+
+      [displayHours, displayMinutes, displaySeconds].forEach(el => {
+        el.classList.remove('urgent');
+      });
+
+      syncDisplayFromInputs();
+      setButtonState('idle');
+      statusEl.classList.remove('visible');
+    });
+
+    // ──────────────────────────────────────────────
+    // Input change: keep display in sync when idle
+    // ──────────────────────────────────────────────
+
+    [inputHours, inputMinutes, inputSeconds].forEach(input => {
+      input.addEventListener('input', () => {
+        if (!running && intervalId === null) {
+          syncDisplayFromInputs();
+        }
+      });
+
+      // Clamp on blur
+      input.addEventListener('blur', () => {
+        const max = (input === inputHours) ? 99 : 59;
+        const val = clamp(parseInt(input.value, 10) || 0, 0, max);
+        input.value = val;
+        if (!running && intervalId === null) {
+          syncDisplayFromInputs();
+        }
+      });
+    });
+
+    // ──────────────────────────────────────────────
+    // Initial display sync
+    // ──────────────────────────────────────────────
+    syncDisplayFromInputs();
+    setButtonState('idle');
+  </script>
+</body>
+</html>
