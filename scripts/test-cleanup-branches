@@ -162,6 +162,25 @@ cd "$WORK"
 git config user.name "Test Runner" 2>/dev/null || true
 git config user.email "test@test.local" 2>/dev/null || true
 
+# Mock gh command — sandbox has no GitHub API; return safe defaults
+export PATH="${SANDBOX}/bin:${PATH}"
+mkdir -p "${SANDBOX}/bin"
+cat > "${SANDBOX}/bin/gh" << 'MOCK_GH'
+#!/usr/bin/env bash
+# Mock gh for sandbox: pr list returns empty, everything else no-ops
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  # Return empty JSON array for --json, or "0" for --jq 'length'
+  if echo "$@" | grep -q "length"; then
+    echo "0"
+  else
+    echo "[]"
+  fi
+  exit 0
+fi
+exit 0
+MOCK_GH
+chmod +x "${SANDBOX}/bin/gh"
+
 # Initial commit on main
 echo "init" > README.md
 git add README.md

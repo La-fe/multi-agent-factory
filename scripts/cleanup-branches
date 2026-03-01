@@ -125,7 +125,8 @@ has_open_pr() {
   local branch="$1"
   local pr_count
   pr_count=$(gh pr list --state open --head "$branch" --json number --jq 'length' 2>/dev/null || echo "0")
-  [[ "$pr_count" -gt 0 ]]
+  # Sanitize: gh may return non-numeric text if not in a GitHub repo
+  [[ "$pr_count" =~ ^[0-9]+$ ]] && [[ "$pr_count" -gt 0 ]]
 }
 
 confirm_action() {
