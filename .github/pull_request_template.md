@@ -11,6 +11,7 @@
 - [ ] Refactor (no behavior change)
 - [ ] Test improvement
 - [ ] Documentation
+- [ ] Scripts / infrastructure
 
 ## Linked issue
 
@@ -22,6 +23,13 @@ Fixes #
 <!-- Point reviewers to the most important changes -->
 
 -
+
+## Security impact
+
+- New file system access or network calls? (`Yes/No`)
+- Command/tool execution surface changed? (`Yes/No`)
+- Secrets/config handling changed? (`Yes/No`)
+- If any `Yes`, explain:
 
 ## Test plan
 

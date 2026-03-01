@@ -79,8 +79,10 @@ gh repo create my-project --public --source=. --push
 
 ```
 my-project/
-├── AGENTS.md              ← AI 行为手册（CLAUDE.md 是它的符号链接）
-├── CLAUDE.md → AGENTS.md  ← Claude Code 自动读取
+├── CLAUDE.md → docs/AGENTS.md  ← Claude Code 自动读取
+├── docs/
+│   ├── AGENTS.md          ← AI 行为手册（CLAUDE.md 是它的符号链接）
+│   └── TUTORIAL.md        ← 完整教程
 ├── scripts/
 │   ├── committer          ← 多 Agent 安全提交脚本
 │   ├── setup-hooks        ← 安装 git hooks

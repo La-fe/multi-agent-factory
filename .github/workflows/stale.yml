@@ -25,7 +25,7 @@ jobs:
             or add the `no-stale` label.
           close-issue-message: >
             Closed due to inactivity. Feel free to reopen if this is still needed.
-          exempt-issue-labels: 'status:ready,no-stale,needs-info,needs-decompose'
+          exempt-issue-labels: 'status:ready,status:in-progress,status:review,no-stale,needs-info,needs-decompose'
 
           # PRs
           days-before-pr-stale: 7
