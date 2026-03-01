@@ -452,6 +452,7 @@ multi-agent-factory/
 │   ├── monitor-agents         ← 实时监控 + 自动批准
 │   ├── create-worktree        ← Worktree 初始化（依赖 + hooks）
 │   ├── committer              ← 多 Agent 安全提交
+│   ├── cleanup-branches       ← 安全分支清理（默认 dry-run）
 │   ├── setup-hooks            ← 安装 git hooks
 │   └── pre-commit/            ← Pre-commit 辅助脚本
 │
@@ -479,6 +480,7 @@ multi-agent-factory/
 ├── .github/
 │   ├── workflows/
 │   │   ├── ci.yml             ← CI（智能跳过 docs-only）
+│   │   ├── cleanup-branches.yml ← 分支自动清理（PR 关闭 + 定时）
 │   │   ├── labeler.yml        ← 路径自动标签
 │   │   ├── auto-label.yml     ← PR 大小自动标签
 │   │   └── stale.yml          ← 过期 Issue 自动关闭
@@ -506,6 +508,7 @@ multi-agent-factory/
 | `scripts/monitor-agents`  | 实时监控        | `--auto-approve`, `--once`, `--interval`, `--session`                    |
 | `scripts/create-worktree` | 创建 worktree | `<branch-name> <issue-number>`                                           |
 | `scripts/committer`       | 安全提交        | `"<commit-msg>" <file1> [file2...]`                                      |
+| `scripts/cleanup-branches`| 分支清理        | `--merged`, `--all`, `--execute`, `--include-manual`                     |
 | `scripts/setup-hooks`     | 安装 hooks    | —                                                                        |
 
 
@@ -563,6 +566,7 @@ status:done             Issue 已解决，PR 已合并
 | 文档                                                             | 内容                           |
 | -------------------------------------------------------------- | ---------------------------- |
 | [TUTORIAL.md](./docs/TUTORIAL.md)                              | 完整教程：从 0 到多 Agent 并行开发       |
+| [CHANGELOG.md](./docs/CHANGELOG.md)                            | 详细更新日志                        |
 | [AGENTS.md](./docs/AGENTS.md)                                  | Agent 行为手册 + 多 Agent 安全规则    |
 | [.claude/prompts/decompose.md](./.claude/prompts/decompose.md) | V2 任务拆解：3 模式 × 8 阶段完整流程     |
 | [.claude/prompts/decompose-eval.md](./.claude/prompts/decompose-eval.md) | 拆解质量评估：12 维度 + 8 条 Veto 规则 |
@@ -574,62 +578,13 @@ status:done             Issue 已解决，PR 已合并
 
 ## 更新日志
 
-### v2.0.0 — 2026-03-01
+详细变更记录见 [CHANGELOG.md](./docs/CHANGELOG.md)。
 
-**`/decompose` V2 — 智能任务拆解系统**
-
-经过 10 轮真实任务迭代测试（基于 SpringBrand/OpenStore 多租户 SaaS 项目），全面升级任务拆解能力。
-
-#### 新增
-
-- **三种拆解模式**
-  - Feature Mode（默认）— 文件级拆解，适合单个功能/Bug 修复
-  - Sprint Mode — 史诗级拆解，适合版本规划/月度 Sprint
-  - Cross-Cut Mode — 跨模块拆解，适合设计系统/中间件等横切关注点
-- **`/decompose-eval` 命令** — 12 维度模式感知质量评估 + 8 条 Veto 规则
-- **MODIFY Merge Contract** — 每个文件修改必须声明 PRESERVES/ADDS/MODIFIES，防止多 Agent 并行时破坏性覆盖
-- **Shared File Registry** — 2+ 任务涉及同一文件时，自动建立 Owner/Writer/Reader 权限模型
-- **强制测试配对** — 每个源码任务必须指定对应测试文件 + 测试范围
-- **环境变量清单** — 逐任务追踪新增环境变量，确保 `.env.example` 不遗漏
-- **环境约束检查** — 在 Wave 编排前发现部署目标不支持的能力（如 Vercel 上跑 Remotion）
-- **安全制品（RLS）** — 多租户项目强制要求租户隔离策略
-- **外部输入依赖** — 标记非代码阻塞项（API 密钥、设计稿等），与代码依赖分开管理
-- **参考文件按需加载** — 4 份方法论文档在对应阶段 `cat` 加载，不占基础 context
-
-#### 改进
-
-- `/decompose` 从 115 行升级到 490+ 行，覆盖 8 个执行阶段
-- Quality Gate 从 10 项检查扩展到 15 项（6 BLOCK + 9 WARN）
-- Veto 规则从 5 条增加到 8 条
-- 评估维度从 10 个增加到 12 个（Sprint 模式：Architectural Coherence + Integration Coverage；Cross-Cut 模式：Contract Stability + Shared File Governance）
-
-#### 迭代测试覆盖的任务类型
-
-| 轮次 | 任务                    | 复杂度    |
-| -- | --------------------- | ------ |
-| 1  | 邮件收集弹窗                | 简单     |
-| 2  | CI/CD 流水线             | 中等     |
-| 3  | Stripe Connect 支付集成   | 中等     |
-| 4  | 数字产品交付系统              | 中等     |
-| 5  | AI 协创引擎               | 复杂     |
-| 6  | Puck 落地页模板系统          | 复杂     |
-| 7  | Remotion 视频生成          | 极复杂    |
-| 8  | 多租户自定义域名（4 API）       | 复杂     |
-| 9  | V1.0 MVP 完整 Sprint    | Sprint |
-| 10 | Brand DNA 全链路（跨 8 系统） | 横切    |
-
-### v1.0.0 — 2026-02-28
-
-**初始版本**
-
-- 7 个自动化脚本（orchestrator, launch-agents, review-prs, monitor-agents, create-worktree, committer, setup-hooks）
-- Worker / Reviewer 双 Agent 定义
-- 6 个 Claude Code 自定义命令（/decompose, /reviewpr, /landpr, /issue, /triage）
-- GitHub Actions CI + 路径自动标签 + PR 大小标签
-- Issue 模板（Bug Report / Feature Request）
-- 标签驱动的完整生命周期（ready → in-progress → review → done）
-- Pre-commit 质量门（oxlint + oxfmt + tsc）
-- 完整中文教程（TUTORIAL.md）
+| 版本 | 日期 | 主要变更 |
+|------|------|----------|
+| v2.1.0 | 2026-03-01 | 分支生命周期管理 — 6 层安全防护 + 57 项对抗性测试 |
+| v2.0.0 | 2026-03-01 | `/decompose` V2 — 3 种拆解模式 + Merge Contract |
+| v1.0.0 | 2026-02-28 | 初始版本 — 7 脚本 + 双 Agent + 6 命令 |
 
 ---
 
