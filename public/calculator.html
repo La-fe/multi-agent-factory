@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calculator</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f0f2f5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .open-btn {
+      padding: 14px 32px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      background: #4f46e5;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    .open-btn:hover {
+      background: #4338ca;
+    }
+
+    .open-btn:active {
+      transform: scale(0.97);
+    }
+
+    /* Overlay */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+      z-index: 100;
+    }
+
+    .overlay.visible {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    /* Calculator modal */
+    .calculator {
+      background: #1e1e2e;
+      border-radius: 16px;
+      padding: 20px;
+      width: 300px;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+      transform: scale(0.9);
+      transition: transform 0.2s;
+    }
+
+    .overlay.visible .calculator {
+      transform: scale(1);
+    }
+
+    /* Display */
+    .display {
+      background: #13131f;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+      text-align: right;
+      min-height: 80px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      overflow: hidden;
+    }
+
+    .display .expression {
+      font-size: 0.85rem;
+      color: #6c6c8a;
+      min-height: 1.2em;
+      word-break: break-all;
+    }
+
+    .display .current {
+      font-size: 2rem;
+      font-weight: 600;
+      color: #e2e2f0;
+      word-break: break-all;
+    }
+
+    /* Button grid */
+    .buttons {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 18px 0;
+      border: none;
+      border-radius: 10px;
+      font-size: 1.1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: filter 0.1s, transform 0.1s;
+    }
+
+    .btn:active {
+      filter: brightness(1.2);
+      transform: scale(0.95);
+    }
+
+    /* Number buttons */
+    .btn-num {
+      background: #2a2a3e;
+      color: #e2e2f0;
+    }
+
+    /* Operator buttons */
+    .btn-op {
+      background: #3d3d5c;
+      color: #a78bfa;
+    }
+
+    /* Equals button */
+    .btn-eq {
+      background: #4f46e5;
+      color: #fff;
+    }
+
+    /* Clear button */
+    .btn-clear {
+      background: #4a1f2e;
+      color: #f87171;
+    }
+
+    /* Span 2 columns for zero */
+    .span2 {
+      grid-column: span 2;
+    }
+  </style>
+</head>
+<body>
+
+  <button class="open-btn" id="openBtn">Open Calculator</button>
+
+  <div class="overlay" id="overlay" role="dialog" aria-modal="true" aria-label="Calculator">
+    <div class="calculator" id="calculator">
+      <div class="display">
+        <div class="expression" id="expression"></div>
+        <div class="current" id="current">0</div>
+      </div>
+      <div class="buttons">
+        <button class="btn btn-clear span2" data-action="clear">C</button>
+        <button class="btn btn-op" data-action="operator" data-value="÷">÷</button>
+        <button class="btn btn-op" data-action="operator" data-value="×">×</button>
+
+        <button class="btn btn-num" data-action="digit" data-value="7">7</button>
+        <button class="btn btn-num" data-action="digit" data-value="8">8</button>
+        <button class="btn btn-num" data-action="digit" data-value="9">9</button>
+        <button class="btn btn-op" data-action="operator" data-value="-">−</button>
+
+        <button class="btn btn-num" data-action="digit" data-value="4">4</button>
+        <button class="btn btn-num" data-action="digit" data-value="5">5</button>
+        <button class="btn btn-num" data-action="digit" data-value="6">6</button>
+        <button class="btn btn-op" data-action="operator" data-value="+">+</button>
+
+        <button class="btn btn-num" data-action="digit" data-value="1">1</button>
+        <button class="btn btn-num" data-action="digit" data-value="2">2</button>
+        <button class="btn btn-num" data-action="digit" data-value="3">3</button>
+        <button class="btn btn-eq" data-action="equals" style="grid-row: span 2;">=</button>
+
+        <button class="btn btn-num span2" data-action="digit" data-value="0">0</button>
+        <button class="btn btn-num" data-action="decimal">.</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const overlay = document.getElementById('overlay');
+    const openBtn = document.getElementById('openBtn');
+    const calculator = document.getElementById('calculator');
+    const expressionEl = document.getElementById('expression');
+    const currentEl = document.getElementById('current');
+
+    // Calculator state
+    let state = {
+      current: '0',       // current display value
+      operand: null,      // stored operand (as number)
+      operator: null,     // pending operator
+      waitingForOperand: false,
+    };
+
+    function updateDisplay() {
+      currentEl.textContent = state.current;
+      if (state.operand !== null && state.operator) {
+        expressionEl.textContent = `${state.operand} ${state.operator}`;
+      } else {
+        expressionEl.textContent = '';
+      }
+    }
+
+    function inputDigit(digit) {
+      if (state.waitingForOperand) {
+        state.current = digit;
+        state.waitingForOperand = false;
+      } else {
+        state.current = state.current === '0' ? digit : state.current + digit;
+      }
+    }
+
+    function inputDecimal() {
+      if (state.waitingForOperand) {
+        state.current = '0.';
+        state.waitingForOperand = false;
+        return;
+      }
+      if (!state.current.includes('.')) {
+        state.current += '.';
+      }
+    }
+
+    function applyOperator(op) {
+      const value = parseFloat(state.current);
+
+      if (state.operand !== null && !state.waitingForOperand) {
+        const result = calculate(state.operand, value, state.operator);
+        state.current = formatResult(result);
+        state.operand = result;
+      } else {
+        state.operand = value;
+      }
+
+      state.operator = op;
+      state.waitingForOperand = true;
+    }
+
+    function calculate(a, b, op) {
+      switch (op) {
+        case '+': return a + b;
+        case '-': return a - b;
+        case '×': return a * b;
+        case '÷': return b !== 0 ? a / b : NaN;
+        default: return b;
+      }
+    }
+
+    function formatResult(value) {
+      if (isNaN(value)) return 'Error';
+      if (!isFinite(value)) return 'Error';
+      // Avoid floating-point display artifacts
+      const str = value.toPrecision(12);
+      return parseFloat(str).toString();
+    }
+
+    function equals() {
+      if (state.operator === null || state.waitingForOperand) return;
+      const value = parseFloat(state.current);
+      const result = calculate(state.operand, value, state.operator);
+      expressionEl.textContent = `${state.operand} ${state.operator} ${value} =`;
+      state.current = formatResult(result);
+      state.operand = null;
+      state.operator = null;
+      state.waitingForOperand = true;
+    }
+
+    function clearAll() {
+      state = { current: '0', operand: null, operator: null, waitingForOperand: false };
+    }
+
+    // Button click handler
+    calculator.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+
+      const action = btn.dataset.action;
+
+      switch (action) {
+        case 'digit':
+          inputDigit(btn.dataset.value);
+          break;
+        case 'decimal':
+          inputDecimal();
+          break;
+        case 'operator':
+          applyOperator(btn.dataset.value);
+          break;
+        case 'equals':
+          equals();
+          break;
+        case 'clear':
+          clearAll();
+          break;
+      }
+
+      updateDisplay();
+    });
+
+    // Open / close
+    function openModal() {
+      overlay.classList.add('visible');
+      openBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeModal() {
+      overlay.classList.remove('visible');
+      openBtn.setAttribute('aria-expanded', 'false');
+      clearAll();
+      updateDisplay();
+    }
+
+    openBtn.addEventListener('click', openModal);
+
+    // Click outside closes modal
+    overlay.addEventListener('click', (e) => {
+      if (!calculator.contains(e.target)) {
+        closeModal();
+      }
+    });
+
+    // ESC closes modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.classList.contains('visible')) {
+        closeModal();
+      }
+    });
+
+    // Keyboard support for calculator when open
+    document.addEventListener('keydown', (e) => {
+      if (!overlay.classList.contains('visible')) return;
+
+      const key = e.key;
+      if (key >= '0' && key <= '9') { inputDigit(key); updateDisplay(); }
+      else if (key === '.') { inputDecimal(); updateDisplay(); }
+      else if (key === '+') { applyOperator('+'); updateDisplay(); }
+      else if (key === '-') { applyOperator('-'); updateDisplay(); }
+      else if (key === '*') { applyOperator('×'); updateDisplay(); }
+      else if (key === '/') { e.preventDefault(); applyOperator('÷'); updateDisplay(); }
+      else if (key === 'Enter' || key === '=') { equals(); updateDisplay(); }
+      else if (key === 'c' || key === 'C' || key === 'Backspace') { clearAll(); updateDisplay(); }
+    });
+
+    // Initial display
+    updateDisplay();
+  </script>
+</body>
+</html>
