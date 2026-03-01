@@ -38,10 +38,10 @@ assert_branch_exists() {
   local branch="$1"
   local msg="${2:-Branch '$branch' should exist}"
   if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   else
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg}")
   fi
 }
@@ -50,10 +50,10 @@ assert_branch_gone() {
   local branch="$1"
   local msg="${2:-Branch '$branch' should be deleted}"
   if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg}")
   else
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   fi
 }
@@ -62,10 +62,10 @@ assert_remote_exists() {
   local branch="$1"
   local msg="${2:-Remote branch '$branch' should exist}"
   if git show-ref --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null; then
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   else
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg}")
   fi
 }
@@ -74,10 +74,10 @@ assert_remote_gone() {
   local branch="$1"
   local msg="${2:-Remote branch '$branch' should be deleted}"
   if git show-ref --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null; then
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg}")
   else
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   fi
 }
@@ -87,10 +87,10 @@ assert_exit_code() {
   local actual="$2"
   local msg="$3"
   if [[ "$actual" -eq "$expected" ]]; then
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   else
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg} (expected exit $expected, got $actual)")
   fi
 }
@@ -104,10 +104,10 @@ assert_output_contains() {
   local expected="$2"
   local msg="$3"
   if echo "$output" | strip_ansi | grep -q "$expected"; then
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   else
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg} (expected to contain: '$expected')")
   fi
 }
@@ -117,10 +117,10 @@ assert_output_not_contains() {
   local expected="$2"
   local msg="$3"
   if echo "$output" | strip_ansi | grep -q "$expected"; then
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg} (should NOT contain: '$expected')")
   else
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   fi
 }
@@ -435,10 +435,10 @@ assert_output_contains "$OUTPUT" "Orphaned Worktrees" "Orphaned worktree section
 # Execute should clean it
 OUTPUT=$(bash "$CLEANUP_SCRIPT" --orphaned-wt --execute --ci 2>&1) || true
 if [[ ! -d "${WORK}/.worktrees/feat/agent-ghost-999" ]]; then
-  ((PASS++))
+  ((PASS++)) || true
   TESTS+=("${GREEN}PASS${NC} Residual worktree directory removed")
 else
-  ((FAIL++))
+  ((FAIL++)) || true
   TESTS+=("${RED}FAIL${NC} Residual worktree directory NOT removed")
 fi
 
@@ -515,10 +515,10 @@ for i in $(seq 1 30); do
   fi
 done
 if [[ "$ALL_AGENT_GONE" == true ]]; then
-  ((PASS++))
+  ((PASS++)) || true
   TESTS+=("${GREEN}PASS${NC} All 30 stress agent branches deleted")
 else
-  ((FAIL++))
+  ((FAIL++)) || true
   TESTS+=("${RED}FAIL${NC} Some stress agent branches survived")
 fi
 
@@ -531,10 +531,10 @@ for i in $(seq 1 5); do
   fi
 done
 if [[ "$ALL_HUMAN_ALIVE" == true ]]; then
-  ((PASS++))
+  ((PASS++)) || true
   TESTS+=("${GREEN}PASS${NC} All 5 manual branches survived stress test")
 else
-  ((FAIL++))
+  ((FAIL++)) || true
   TESTS+=("${RED}FAIL${NC} Some manual branches were incorrectly deleted in stress test")
 fi
 
@@ -560,10 +560,10 @@ test_agent_pattern() {
   fi
 
   if [[ "$result" == "$expected" ]]; then
-    ((PASS++))
+    ((PASS++)) || true
     TESTS+=("${GREEN}PASS${NC} ${msg}")
   else
-    ((FAIL++))
+    ((FAIL++)) || true
     TESTS+=("${RED}FAIL${NC} ${msg} (expected=$expected, got=$result)")
   fi
 }

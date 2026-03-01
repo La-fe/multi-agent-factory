@@ -164,21 +164,21 @@ check_branch() {
   # Check 1: protected branch
   if is_protected "$bare_branch"; then
     SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(protected: ${bare_branch})${NC}")
-    ((SKIP_COUNT++))
+    ((SKIP_COUNT++)) || true
     return 1
   fi
 
   # Check 2: current branch
   if [[ "$bare_branch" == "$CURRENT_BRANCH" ]]; then
     SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(current branch)${NC}")
-    ((SKIP_COUNT++))
+    ((SKIP_COUNT++)) || true
     return 1
   fi
 
   # Check 3: active worktree
   if has_active_worktree "$bare_branch"; then
     SKIP_REASONS+=("  ${YELLOW}SKIP${NC} ${branch} ${YELLOW}(active worktree)${NC}")
-    ((SKIP_COUNT++))
+    ((SKIP_COUNT++)) || true
     return 1
   fi
 
@@ -186,7 +186,7 @@ check_branch() {
   if [[ "$source" == "local" ]]; then
     if has_unpushed_commits "$bare_branch"; then
       SKIP_REASONS+=("  ${RED}PROTECTED${NC} ${branch} ${RED}(has unpushed commits)${NC}")
-      ((PROTECTED_COUNT++))
+      ((PROTECTED_COUNT++)) || true
       return 1
     fi
   fi
@@ -194,7 +194,7 @@ check_branch() {
   # Check 5: open PR
   if has_open_pr "$bare_branch"; then
     SKIP_REASONS+=("  ${CYAN}SKIP${NC} ${branch} ${CYAN}(has open PR)${NC}")
-    ((SKIP_COUNT++))
+    ((SKIP_COUNT++)) || true
     return 1
   fi
 
@@ -202,7 +202,7 @@ check_branch() {
   if ! is_agent_branch "$bare_branch"; then
     if [[ "$INCLUDE_MANUAL" != true ]]; then
       SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(non-agent branch, use --include-manual)${NC}")
-      ((MANUAL_COUNT++))
+      ((MANUAL_COUNT++)) || true
       return 1
     fi
   fi
@@ -227,12 +227,12 @@ if [[ "$ANY_MODE" == false ]]; then
   while IFS= read -r branch; do
     branch=$(echo "$branch" | sed 's/^[* ]*//' | xargs)
     [[ -z "$branch" ]] && continue
-    ((LOCAL_COUNT++))
+    ((LOCAL_COUNT++)) || true
     if is_agent_branch "$branch"; then
-      ((AGENT_LOCAL++))
+      ((AGENT_LOCAL++)) || true
       local_marker="${GREEN}agent${NC}"
     else
-      ((MANUAL_LOCAL++))
+      ((MANUAL_LOCAL++)) || true
       local_marker="${YELLOW}manual${NC}"
     fi
     # Check merge status
@@ -257,12 +257,12 @@ if [[ "$ANY_MODE" == false ]]; then
     [[ -z "$branch" ]] && continue
     bare="${branch#origin/}"
     [[ "$bare" == "main" || "$bare" == "master" || "$bare" == "HEAD" ]] && continue
-    ((REMOTE_COUNT++))
+    ((REMOTE_COUNT++)) || true
     if is_agent_branch "$bare"; then
-      ((AGENT_REMOTE++))
+      ((AGENT_REMOTE++)) || true
       remote_marker="${GREEN}agent${NC}"
     else
-      ((MANUAL_REMOTE++))
+      ((MANUAL_REMOTE++)) || true
       remote_marker="${YELLOW}manual${NC}"
     fi
     # Check merge status
@@ -281,7 +281,7 @@ if [[ "$ANY_MODE" == false ]]; then
   WT_COUNT=0
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    ((WT_COUNT++))
+    ((WT_COUNT++)) || true
     echo -e "  ${line}"
   done < <(git worktree list 2>/dev/null | tail -n +2)  # skip main worktree
   if [[ "$WT_COUNT" -eq 0 ]]; then
@@ -308,16 +308,16 @@ if [[ "$MODE_MERGED" == true ]]; then
     [[ -z "$branch" ]] && continue
     if check_branch "$branch" "local"; then
       CANDIDATES+=("local:${branch}")
-      ((CANDIDATE_COUNT++))
+      ((CANDIDATE_COUNT++)) || true
       if [[ "$EXECUTE" == true ]]; then
         if [[ "$CI_MODE" == true ]] || confirm_action "Delete local branch '${branch}'?"; then
           if git branch -D "$branch" 2>/dev/null; then
             echo -e "  ${GREEN}✓ Deleted${NC} ${branch}"
-            ((DELETED_COUNT++))
+            ((DELETED_COUNT++)) || true
           else
             git update-ref -d "refs/heads/${branch}" 2>/dev/null || true
             echo -e "  ${GREEN}✓ Deleted (via update-ref)${NC} ${branch}"
-            ((DELETED_COUNT++))
+            ((DELETED_COUNT++)) || true
           fi
         else
           echo -e "  ${YELLOW}⊘ Skipped${NC} ${branch}"
@@ -337,12 +337,12 @@ if [[ "$MODE_MERGED" == true ]]; then
     bare="${branch#origin/}"
     if check_branch "$bare" "remote"; then
       CANDIDATES+=("remote:${bare}")
-      ((CANDIDATE_COUNT++))
+      ((CANDIDATE_COUNT++)) || true
       if [[ "$EXECUTE" == true ]]; then
         if [[ "$CI_MODE" == true ]] || confirm_action "Delete remote branch '${bare}'?"; then
           if git push origin --delete "$bare" 2>/dev/null; then
             echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare}"
-            ((DELETED_COUNT++))
+            ((DELETED_COUNT++)) || true
           else
             echo -e "  ${RED}✗ Failed to delete${NC} ${bare}"
           fi
@@ -373,12 +373,12 @@ if [[ "$MODE_CLOSED_PRS" == true ]]; then
     if git show-ref --verify --quiet "refs/heads/${bare}" 2>/dev/null; then
       if check_branch "$bare" "local"; then
         CANDIDATES+=("local:${bare}")
-        ((CANDIDATE_COUNT++))
+        ((CANDIDATE_COUNT++)) || true
         if [[ "$EXECUTE" == true ]]; then
           if [[ "$CI_MODE" == true ]] || confirm_action "Delete local branch '${bare}' (PR closed)?"; then
             git branch -D "$bare" 2>/dev/null || git update-ref -d "refs/heads/${bare}" 2>/dev/null || true
             echo -e "  ${GREEN}✓ Deleted local${NC} ${bare}"
-            ((DELETED_COUNT++))
+            ((DELETED_COUNT++)) || true
           else
             echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
           fi
@@ -391,12 +391,15 @@ if [[ "$MODE_CLOSED_PRS" == true ]]; then
     if git show-ref --verify --quiet "refs/remotes/origin/${bare}" 2>/dev/null; then
       if check_branch "$bare" "remote"; then
         CANDIDATES+=("remote:${bare}")
-        ((CANDIDATE_COUNT++))
+        ((CANDIDATE_COUNT++)) || true
         if [[ "$EXECUTE" == true ]]; then
           if [[ "$CI_MODE" == true ]] || confirm_action "Delete remote branch '${bare}' (PR closed)?"; then
-            git push origin --delete "$bare" 2>/dev/null && \
-              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare}" && ((DELETED_COUNT++)) || \
+            if git push origin --delete "$bare" 2>/dev/null; then
+              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare}"
+              ((DELETED_COUNT++)) || true
+            else
               echo -e "  ${RED}✗ Failed to delete remote${NC} ${bare}"
+            fi
           else
             echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
           fi
@@ -439,12 +442,15 @@ if [[ "$MODE_STALE" == true ]]; then
     if [[ "$COMMIT_EPOCH" -lt "$CUTOFF_DATE" ]]; then
       if check_branch "$bare" "remote"; then
         CANDIDATES+=("remote:${bare}")
-        ((CANDIDATE_COUNT++))
+        ((CANDIDATE_COUNT++)) || true
         if [[ "$EXECUTE" == true ]]; then
           if [[ "$CI_MODE" == true ]] || confirm_action "Delete stale remote branch '${bare}' (last activity: ${COMMIT_DATE})?"; then
-            git push origin --delete "$bare" 2>/dev/null && \
-              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare} ${DIM}(inactive since ${COMMIT_DATE})${NC}" && ((DELETED_COUNT++)) || \
+            if git push origin --delete "$bare" 2>/dev/null; then
+              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare} ${DIM}(inactive since ${COMMIT_DATE})${NC}"
+              ((DELETED_COUNT++)) || true
+            else
               echo -e "  ${RED}✗ Failed to delete${NC} ${bare}"
+            fi
           else
             echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
           fi
