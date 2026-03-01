@@ -69,3 +69,15 @@ jobs:
         run: |
           echo "Coverage thresholds enforced by vitest.config.ts"
           echo "Minimum: 70% lines, 70% functions, 55% branches"
+
+  # Branch cleanup safety tests — runs in isolated sandbox, no real branches touched
+  test-cleanup-branches:
+    needs: [detect-scope]
+    if: needs.detect-scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run adversarial branch cleanup tests
+        run: scripts/test-cleanup-branches

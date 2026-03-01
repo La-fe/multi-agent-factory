@@ -1,0 +1,526 @@
+#!/usr/bin/env bash
+# ─── Branch Lifecycle Cleanup ─────────────────────────────────────────────────
+# Safe branch cleanup following OpenClaw's safety philosophy:
+#   1. Naming isolation — only agent-/issue- prefixed branches auto-cleaned
+#   2. Unpushed commit check — never delete branches with unsynced work
+#   3. Active worktree check — never delete branches in use
+#   4. Open PR check — never delete branches with active PRs
+#   5. Default dry-run — must pass --execute to actually delete
+#
+# Usage:
+#   scripts/cleanup-branches                        # Status report (read-only)
+#   scripts/cleanup-branches --merged               # Preview merged branches
+#   scripts/cleanup-branches --merged --execute      # Delete merged branches
+#   scripts/cleanup-branches --all                   # Preview all cleanable
+#   scripts/cleanup-branches --all --execute         # Execute full cleanup
+#   scripts/cleanup-branches --all --execute --ci    # CI mode (no confirmation)
+# ──────────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+# ─── Colors ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Defaults ─────────────────────────────────────────────────────────────────
+EXECUTE=false
+CI_MODE=false
+INCLUDE_MANUAL=false
+MODE_MERGED=false
+MODE_CLOSED_PRS=false
+MODE_STALE=false
+MODE_ORPHANED_WT=false
+STALE_DAYS=14
+
+# ─── Parse Arguments ─────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --execute)     EXECUTE=true ;;
+    --ci)          CI_MODE=true; EXECUTE=true ;;
+    --merged)      MODE_MERGED=true ;;
+    --closed-prs)  MODE_CLOSED_PRS=true ;;
+    --stale)       MODE_STALE=true; [[ "${2:-}" =~ ^[0-9]+$ ]] && STALE_DAYS="$2" && shift ;;
+    --orphaned-wt) MODE_ORPHANED_WT=true ;;
+    --all)         MODE_MERGED=true; MODE_CLOSED_PRS=true; MODE_STALE=true; MODE_ORPHANED_WT=true ;;
+    --include-manual) INCLUDE_MANUAL=true ;;
+    -h|--help)
+      echo "Usage: scripts/cleanup-branches [OPTIONS]"
+      echo ""
+      echo "Modes (combinable):"
+      echo "  --merged         Clean branches merged into main"
+      echo "  --closed-prs     Clean branches from closed PRs"
+      echo "  --stale [N]      Clean remote branches inactive for N days (default: 14)"
+      echo "  --orphaned-wt    Prune orphan worktrees + residual directories"
+      echo "  --all            Enable all modes above"
+      echo ""
+      echo "Execution:"
+      echo "  --execute        Actually delete (default is dry-run preview)"
+      echo "  --ci             CI mode: --execute + no interactive confirmation"
+      echo "  --include-manual Include non-agent branches (default: skip them)"
+      echo ""
+      echo "No flags = status report only."
+      exit 0
+      ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# ─── Detect repo ──────────────────────────────────────────────────────────────
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [[ -z "$REPO_ROOT" ]]; then
+  echo -e "${RED}Error: not inside a git repository${NC}"
+  exit 1
+fi
+cd "$REPO_ROOT"
+
+MAIN_BRANCH="main"
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+is_agent_branch() {
+  local branch="$1"
+  # Match branches with agent- or issue- in their name
+  [[ "$branch" == *"/agent-"* ]] || [[ "$branch" == *"/issue-"* ]] || \
+  [[ "$branch" == "agent-"* ]] || [[ "$branch" == "issue-"* ]]
+}
+
+is_protected() {
+  local branch="$1"
+  [[ "$branch" == "main" ]] || [[ "$branch" == "master" ]] || \
+  [[ "$branch" == "develop" ]] || [[ "$branch" == "HEAD" ]]
+}
+
+has_active_worktree() {
+  local branch="$1"
+  git worktree list 2>/dev/null | grep -q "\[${branch}\]"
+}
+
+has_unpushed_commits() {
+  local branch="$1"
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null; then
+    local count
+    count=$(git log "origin/${branch}..${branch}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    [[ "$count" -gt 0 ]]
+  else
+    # No remote tracking — check if branch has commits beyond main
+    if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+      local count
+      count=$(git log "${MAIN_BRANCH}..${branch}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+      [[ "$count" -gt 0 ]]
+    else
+      return 1
+    fi
+  fi
+}
+
+has_open_pr() {
+  local branch="$1"
+  local pr_count
+  pr_count=$(gh pr list --state open --head "$branch" --json number --jq 'length' 2>/dev/null || echo "0")
+  [[ "$pr_count" -gt 0 ]]
+}
+
+confirm_action() {
+  if [[ "$CI_MODE" == true ]]; then
+    return 0
+  fi
+  local msg="$1"
+  echo -en "  ${YELLOW}${msg} [y/N] ${NC}"
+  read -r answer
+  [[ "$answer" =~ ^[Yy] ]]
+}
+
+# ─── Counters ─────────────────────────────────────────────────────────────────
+SKIP_COUNT=0
+CANDIDATE_COUNT=0
+DELETED_COUNT=0
+PROTECTED_COUNT=0
+MANUAL_COUNT=0
+
+declare -a CANDIDATES=()
+declare -a SKIP_REASONS=()
+
+# ─── Safety check pipeline ───────────────────────────────────────────────────
+
+check_branch() {
+  local branch="$1"
+  local source="$2"  # "local" or "remote"
+
+  # Strip origin/ prefix for remote branches
+  local bare_branch="$branch"
+  if [[ "$source" == "remote" ]]; then
+    bare_branch="${branch#origin/}"
+  fi
+
+  # Check 1: protected branch
+  if is_protected "$bare_branch"; then
+    SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(protected: ${bare_branch})${NC}")
+    ((SKIP_COUNT++))
+    return 1
+  fi
+
+  # Check 2: current branch
+  if [[ "$bare_branch" == "$CURRENT_BRANCH" ]]; then
+    SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(current branch)${NC}")
+    ((SKIP_COUNT++))
+    return 1
+  fi
+
+  # Check 3: active worktree
+  if has_active_worktree "$bare_branch"; then
+    SKIP_REASONS+=("  ${YELLOW}SKIP${NC} ${branch} ${YELLOW}(active worktree)${NC}")
+    ((SKIP_COUNT++))
+    return 1
+  fi
+
+  # Check 4: unpushed commits (local branches only)
+  if [[ "$source" == "local" ]]; then
+    if has_unpushed_commits "$bare_branch"; then
+      SKIP_REASONS+=("  ${RED}PROTECTED${NC} ${branch} ${RED}(has unpushed commits)${NC}")
+      ((PROTECTED_COUNT++))
+      return 1
+    fi
+  fi
+
+  # Check 5: open PR
+  if has_open_pr "$bare_branch"; then
+    SKIP_REASONS+=("  ${CYAN}SKIP${NC} ${branch} ${CYAN}(has open PR)${NC}")
+    ((SKIP_COUNT++))
+    return 1
+  fi
+
+  # Check 6: agent- prefix filter
+  if ! is_agent_branch "$bare_branch"; then
+    if [[ "$INCLUDE_MANUAL" != true ]]; then
+      SKIP_REASONS+=("  ${DIM}SKIP${NC} ${branch} ${DIM}(non-agent branch, use --include-manual)${NC}")
+      ((MANUAL_COUNT++))
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+# ─── Status Report (no flags) ────────────────────────────────────────────────
+
+ANY_MODE=$([[ "$MODE_MERGED" == true || "$MODE_CLOSED_PRS" == true || "$MODE_STALE" == true || "$MODE_ORPHANED_WT" == true ]] && echo true || echo false)
+
+if [[ "$ANY_MODE" == false ]]; then
+  echo -e "${BOLD}Branch Status Report${NC}"
+  echo "────────────────────────────────────────────────────────"
+  echo ""
+
+  # Local branches
+  echo -e "${BLUE}Local branches:${NC}"
+  LOCAL_COUNT=0
+  AGENT_LOCAL=0
+  MANUAL_LOCAL=0
+  while IFS= read -r branch; do
+    branch=$(echo "$branch" | sed 's/^[* ]*//' | xargs)
+    [[ -z "$branch" ]] && continue
+    ((LOCAL_COUNT++))
+    if is_agent_branch "$branch"; then
+      ((AGENT_LOCAL++))
+      local_marker="${GREEN}agent${NC}"
+    else
+      ((MANUAL_LOCAL++))
+      local_marker="${YELLOW}manual${NC}"
+    fi
+    # Check merge status
+    if git merge-base --is-ancestor "$branch" "$MAIN_BRANCH" 2>/dev/null; then
+      echo -e "  ${DIM}✓ merged${NC}  [${local_marker}] ${branch}"
+    else
+      echo -e "    active  [${local_marker}] ${branch}"
+    fi
+  done < <(git branch --format='%(refname:short)' | grep -v "^${MAIN_BRANCH}$")
+
+  echo -e "  ${DIM}Total: ${LOCAL_COUNT} (${AGENT_LOCAL} agent, ${MANUAL_LOCAL} manual)${NC}"
+  echo ""
+
+  # Remote branches
+  echo -e "${BLUE}Remote branches:${NC}"
+  git fetch --prune origin 2>/dev/null || true
+  REMOTE_COUNT=0
+  AGENT_REMOTE=0
+  MANUAL_REMOTE=0
+  while IFS= read -r branch; do
+    branch=$(echo "$branch" | xargs)
+    [[ -z "$branch" ]] && continue
+    bare="${branch#origin/}"
+    [[ "$bare" == "main" || "$bare" == "master" || "$bare" == "HEAD" ]] && continue
+    ((REMOTE_COUNT++))
+    if is_agent_branch "$bare"; then
+      ((AGENT_REMOTE++))
+      remote_marker="${GREEN}agent${NC}"
+    else
+      ((MANUAL_REMOTE++))
+      remote_marker="${YELLOW}manual${NC}"
+    fi
+    # Check merge status
+    if git merge-base --is-ancestor "origin/${bare}" "origin/${MAIN_BRANCH}" 2>/dev/null; then
+      echo -e "  ${DIM}✓ merged${NC}  [${remote_marker}] ${bare}"
+    else
+      echo -e "    active  [${remote_marker}] ${bare}"
+    fi
+  done < <(git branch -r --format='%(refname:short)' 2>/dev/null | grep '^origin/' | grep -v 'origin/HEAD')
+
+  echo -e "  ${DIM}Total: ${REMOTE_COUNT} (${AGENT_REMOTE} agent, ${MANUAL_REMOTE} manual)${NC}"
+  echo ""
+
+  # Worktrees
+  echo -e "${BLUE}Worktrees:${NC}"
+  WT_COUNT=0
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    ((WT_COUNT++))
+    echo -e "  ${line}"
+  done < <(git worktree list 2>/dev/null | tail -n +2)  # skip main worktree
+  if [[ "$WT_COUNT" -eq 0 ]]; then
+    echo -e "  ${DIM}(none)${NC}"
+  fi
+  echo ""
+
+  echo "────────────────────────────────────────────────────────"
+  echo -e "Run with ${CYAN}--merged${NC}, ${CYAN}--all${NC}, etc. to preview cleanup actions."
+  echo -e "Add ${CYAN}--execute${NC} to actually perform deletions."
+  exit 0
+fi
+
+# ─── Merged Branches ─────────────────────────────────────────────────────────
+
+if [[ "$MODE_MERGED" == true ]]; then
+  echo -e "${BOLD}Merged Branches (into ${MAIN_BRANCH})${NC}"
+  echo "────────────────────────────────────────────────────────"
+
+  # Local merged
+  echo -e "${BLUE}Local merged branches:${NC}"
+  while IFS= read -r branch; do
+    branch=$(echo "$branch" | sed 's/^[* ]*//' | xargs)
+    [[ -z "$branch" ]] && continue
+    if check_branch "$branch" "local"; then
+      CANDIDATES+=("local:${branch}")
+      ((CANDIDATE_COUNT++))
+      if [[ "$EXECUTE" == true ]]; then
+        if [[ "$CI_MODE" == true ]] || confirm_action "Delete local branch '${branch}'?"; then
+          if git branch -D "$branch" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Deleted${NC} ${branch}"
+            ((DELETED_COUNT++))
+          else
+            git update-ref -d "refs/heads/${branch}" 2>/dev/null || true
+            echo -e "  ${GREEN}✓ Deleted (via update-ref)${NC} ${branch}"
+            ((DELETED_COUNT++))
+          fi
+        else
+          echo -e "  ${YELLOW}⊘ Skipped${NC} ${branch}"
+        fi
+      else
+        echo -e "  ${CYAN}→ Would delete${NC} ${branch}"
+      fi
+    fi
+  done < <(git branch --merged "$MAIN_BRANCH" --format='%(refname:short)' 2>/dev/null | grep -v "^${MAIN_BRANCH}$")
+
+  # Remote merged
+  echo -e "${BLUE}Remote merged branches:${NC}"
+  git fetch --prune origin 2>/dev/null || true
+  while IFS= read -r branch; do
+    branch=$(echo "$branch" | xargs)
+    [[ -z "$branch" ]] && continue
+    bare="${branch#origin/}"
+    if check_branch "$bare" "remote"; then
+      CANDIDATES+=("remote:${bare}")
+      ((CANDIDATE_COUNT++))
+      if [[ "$EXECUTE" == true ]]; then
+        if [[ "$CI_MODE" == true ]] || confirm_action "Delete remote branch '${bare}'?"; then
+          if git push origin --delete "$bare" 2>/dev/null; then
+            echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare}"
+            ((DELETED_COUNT++))
+          else
+            echo -e "  ${RED}✗ Failed to delete${NC} ${bare}"
+          fi
+        else
+          echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
+        fi
+      else
+        echo -e "  ${CYAN}→ Would delete remote${NC} ${bare}"
+      fi
+    fi
+  done < <(git branch -r --merged "origin/${MAIN_BRANCH}" --format='%(refname:short)' 2>/dev/null | grep '^origin/' | grep -v 'origin/HEAD' | grep -v "origin/${MAIN_BRANCH}")
+
+  echo ""
+fi
+
+# ─── Closed PRs ──────────────────────────────────────────────────────────────
+
+if [[ "$MODE_CLOSED_PRS" == true ]]; then
+  echo -e "${BOLD}Branches from Closed/Merged PRs${NC}"
+  echo "────────────────────────────────────────────────────────"
+
+  # Get closed PRs with their head branch names
+  CLOSED_BRANCHES=$(gh pr list --state closed --json headRefName,state,mergedAt --jq '.[] | select(.mergedAt != null or .state == "CLOSED") | .headRefName' 2>/dev/null | sort -u || echo "")
+
+  while IFS= read -r bare; do
+    [[ -z "$bare" ]] && continue
+    # Check if local branch still exists
+    if git show-ref --verify --quiet "refs/heads/${bare}" 2>/dev/null; then
+      if check_branch "$bare" "local"; then
+        CANDIDATES+=("local:${bare}")
+        ((CANDIDATE_COUNT++))
+        if [[ "$EXECUTE" == true ]]; then
+          if [[ "$CI_MODE" == true ]] || confirm_action "Delete local branch '${bare}' (PR closed)?"; then
+            git branch -D "$bare" 2>/dev/null || git update-ref -d "refs/heads/${bare}" 2>/dev/null || true
+            echo -e "  ${GREEN}✓ Deleted local${NC} ${bare}"
+            ((DELETED_COUNT++))
+          else
+            echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
+          fi
+        else
+          echo -e "  ${CYAN}→ Would delete local${NC} ${bare}"
+        fi
+      fi
+    fi
+    # Check if remote branch still exists
+    if git show-ref --verify --quiet "refs/remotes/origin/${bare}" 2>/dev/null; then
+      if check_branch "$bare" "remote"; then
+        CANDIDATES+=("remote:${bare}")
+        ((CANDIDATE_COUNT++))
+        if [[ "$EXECUTE" == true ]]; then
+          if [[ "$CI_MODE" == true ]] || confirm_action "Delete remote branch '${bare}' (PR closed)?"; then
+            git push origin --delete "$bare" 2>/dev/null && \
+              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare}" && ((DELETED_COUNT++)) || \
+              echo -e "  ${RED}✗ Failed to delete remote${NC} ${bare}"
+          else
+            echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
+          fi
+        else
+          echo -e "  ${CYAN}→ Would delete remote${NC} ${bare}"
+        fi
+      fi
+    fi
+  done <<< "$CLOSED_BRANCHES"
+
+  echo ""
+fi
+
+# ─── Stale Remote Branches ───────────────────────────────────────────────────
+
+if [[ "$MODE_STALE" == true ]]; then
+  echo -e "${BOLD}Stale Remote Branches (>${STALE_DAYS} days inactive)${NC}"
+  echo "────────────────────────────────────────────────────────"
+
+  CUTOFF_DATE=$(date -v-${STALE_DAYS}d +%s 2>/dev/null || date -d "${STALE_DAYS} days ago" +%s 2>/dev/null || echo "0")
+
+  git fetch --prune origin 2>/dev/null || true
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    # Format: committerdate:iso8601 refname:short
+    COMMIT_DATE=$(echo "$line" | cut -d'|' -f1)
+    branch=$(echo "$line" | cut -d'|' -f2)
+    bare="${branch#origin/}"
+
+    [[ "$bare" == "main" || "$bare" == "master" || "$bare" == "HEAD" || -z "$bare" ]] && continue
+
+    # Already handled by --merged
+    if [[ "$MODE_MERGED" == true ]]; then
+      if git merge-base --is-ancestor "origin/${bare}" "origin/${MAIN_BRANCH}" 2>/dev/null; then
+        continue
+      fi
+    fi
+
+    COMMIT_EPOCH=$(date -jf "%Y-%m-%d %H:%M:%S %z" "$COMMIT_DATE" +%s 2>/dev/null || date -d "$COMMIT_DATE" +%s 2>/dev/null || echo "999999999999")
+    if [[ "$COMMIT_EPOCH" -lt "$CUTOFF_DATE" ]]; then
+      if check_branch "$bare" "remote"; then
+        CANDIDATES+=("remote:${bare}")
+        ((CANDIDATE_COUNT++))
+        if [[ "$EXECUTE" == true ]]; then
+          if [[ "$CI_MODE" == true ]] || confirm_action "Delete stale remote branch '${bare}' (last activity: ${COMMIT_DATE})?"; then
+            git push origin --delete "$bare" 2>/dev/null && \
+              echo -e "  ${GREEN}✓ Deleted remote${NC} ${bare} ${DIM}(inactive since ${COMMIT_DATE})${NC}" && ((DELETED_COUNT++)) || \
+              echo -e "  ${RED}✗ Failed to delete${NC} ${bare}"
+          else
+            echo -e "  ${YELLOW}⊘ Skipped${NC} ${bare}"
+          fi
+        else
+          echo -e "  ${CYAN}→ Would delete remote${NC} ${bare} ${DIM}(inactive since ${COMMIT_DATE})${NC}"
+        fi
+      fi
+    fi
+  done < <(git for-each-ref --sort=committerdate --format='%(committerdate:iso8601)|%(refname:short)' refs/remotes/origin/ 2>/dev/null | grep -v 'origin/HEAD')
+
+  echo ""
+fi
+
+# ─── Orphaned Worktrees ──────────────────────────────────────────────────────
+
+if [[ "$MODE_ORPHANED_WT" == true ]]; then
+  echo -e "${BOLD}Orphaned Worktrees${NC}"
+  echo "────────────────────────────────────────────────────────"
+
+  # Prune stale worktree metadata
+  PRUNE_OUTPUT=$(git worktree prune --dry-run 2>&1 || true)
+  if [[ -n "$PRUNE_OUTPUT" ]]; then
+    echo -e "  ${CYAN}Stale worktree entries:${NC}"
+    echo "$PRUNE_OUTPUT" | sed 's/^/    /'
+    if [[ "$EXECUTE" == true ]]; then
+      git worktree prune 2>/dev/null
+      echo -e "  ${GREEN}✓ Pruned stale worktree metadata${NC}"
+    else
+      echo -e "  ${CYAN}→ Would prune stale worktree metadata${NC}"
+    fi
+  else
+    echo -e "  ${DIM}No stale worktree entries${NC}"
+  fi
+
+  # Check for residual worktree directories
+  WORKTREE_DIR="${REPO_ROOT}/.worktrees"
+  if [[ -d "$WORKTREE_DIR" ]]; then
+    for dir in "$WORKTREE_DIR"/*/; do
+      [[ -d "$dir" ]] || continue
+      dir_name=$(basename "$dir")
+      # Check if this directory is registered as an active worktree
+      if ! git worktree list 2>/dev/null | grep -q "$dir"; then
+        echo -e "  ${YELLOW}Residual directory:${NC} ${dir}"
+        if [[ "$EXECUTE" == true ]]; then
+          if [[ "$CI_MODE" == true ]] || confirm_action "Remove residual worktree directory '${dir_name}'?"; then
+            rm -rf "$dir"
+            echo -e "  ${GREEN}✓ Removed${NC} ${dir}"
+          fi
+        else
+          echo -e "  ${CYAN}→ Would remove${NC} ${dir}"
+        fi
+      fi
+    done
+  fi
+
+  echo ""
+fi
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+
+echo "════════════════════════════════════════════════════════"
+if [[ "$EXECUTE" == true ]]; then
+  echo -e "${BOLD}Cleanup complete:${NC} ${GREEN}${DELETED_COUNT} deleted${NC}, ${SKIP_COUNT} skipped, ${PROTECTED_COUNT} protected, ${MANUAL_COUNT} manual (ignored)"
+else
+  echo -e "${BOLD}Dry-run summary:${NC} ${CYAN}${CANDIDATE_COUNT} candidates${NC}, ${SKIP_COUNT} skipped, ${PROTECTED_COUNT} protected, ${MANUAL_COUNT} manual (ignored)"
+  if [[ "$CANDIDATE_COUNT" -gt 0 ]]; then
+    echo -e "Run with ${CYAN}--execute${NC} to perform deletions."
+  fi
+fi
+
+# Show skipped details
+if [[ ${#SKIP_REASONS[@]} -gt 0 ]]; then
+  echo ""
+  echo -e "${DIM}Skipped branches:${NC}"
+  for reason in "${SKIP_REASONS[@]}"; do
+    echo -e "$reason"
+  done
+fi
+
+echo "════════════════════════════════════════════════════════"

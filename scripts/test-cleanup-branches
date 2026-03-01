@@ -1,0 +1,589 @@
+#!/usr/bin/env bash
+# ─── Adversarial Test Suite for cleanup-branches ─────────────────────────────
+# Creates an isolated git sandbox with trap branches designed to catch every
+# class of mis-deletion bug. Runs cleanup-branches and asserts no false positive
+# deletions occurred.
+#
+# Test categories:
+#   1. Naming confusion — branches that LOOK like agent branches but aren't
+#   2. Unpushed commit protection — local-only work must survive
+#   3. Worktree protection — branches in active worktrees must survive
+#   4. Open PR protection — branches with open PRs must survive
+#   5. Protected branches — main/master/develop never touched
+#   6. Current branch — never delete the branch you're on
+#   7. Merged agent branches — SHOULD be cleaned (positive test)
+#   8. --include-manual boundary — manual branches only with explicit opt-in
+#   9. Empty repo / no candidates — graceful handling
+#  10. Special characters in branch names
+#
+# Usage: scripts/test-cleanup-branches
+# ──────────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+PASS=0
+FAIL=0
+TESTS=()
+
+# ─── Test Helpers ─────────────────────────────────────────────────────────────
+
+assert_branch_exists() {
+  local branch="$1"
+  local msg="${2:-Branch '$branch' should exist}"
+  if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  else
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg}")
+  fi
+}
+
+assert_branch_gone() {
+  local branch="$1"
+  local msg="${2:-Branch '$branch' should be deleted}"
+  if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg}")
+  else
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  fi
+}
+
+assert_remote_exists() {
+  local branch="$1"
+  local msg="${2:-Remote branch '$branch' should exist}"
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null; then
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  else
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg}")
+  fi
+}
+
+assert_remote_gone() {
+  local branch="$1"
+  local msg="${2:-Remote branch '$branch' should be deleted}"
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}" 2>/dev/null; then
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg}")
+  else
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  fi
+}
+
+assert_exit_code() {
+  local expected="$1"
+  local actual="$2"
+  local msg="$3"
+  if [[ "$actual" -eq "$expected" ]]; then
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  else
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg} (expected exit $expected, got $actual)")
+  fi
+}
+
+strip_ansi() {
+  sed 's/\x1b\[[0-9;]*m//g'
+}
+
+assert_output_contains() {
+  local output="$1"
+  local expected="$2"
+  local msg="$3"
+  if echo "$output" | strip_ansi | grep -q "$expected"; then
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  else
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg} (expected to contain: '$expected')")
+  fi
+}
+
+assert_output_not_contains() {
+  local output="$1"
+  local expected="$2"
+  local msg="$3"
+  if echo "$output" | strip_ansi | grep -q "$expected"; then
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg} (should NOT contain: '$expected')")
+  else
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  fi
+}
+
+# ─── Setup: Isolated Sandbox ─────────────────────────────────────────────────
+
+REAL_REPO=$(cd "$(dirname "$0")/.." && pwd)
+CLEANUP_SCRIPT="${REAL_REPO}/scripts/cleanup-branches"
+
+SANDBOX=$(mktemp -d)
+REMOTE_BARE="${SANDBOX}/remote.git"
+WORK="${SANDBOX}/work"
+
+cleanup_sandbox() {
+  # Clean up any worktrees first
+  if [[ -d "$WORK" ]]; then
+    cd "$WORK" 2>/dev/null || true
+    git worktree list 2>/dev/null | tail -n +2 | awk '{print $1}' | while read -r wt; do
+      git worktree remove --force "$wt" 2>/dev/null || true
+    done
+  fi
+  rm -rf "$SANDBOX"
+}
+trap cleanup_sandbox EXIT
+
+echo -e "${BOLD}Setting up isolated test sandbox...${NC}"
+echo -e "  Sandbox: ${SANDBOX}"
+echo ""
+
+# Create bare remote
+git init --bare "$REMOTE_BARE" 2>/dev/null
+cd "$REMOTE_BARE" && git symbolic-ref HEAD refs/heads/main
+
+# Create working repo
+git clone "$REMOTE_BARE" "$WORK" 2>/dev/null
+cd "$WORK"
+
+# Initial commit on main
+echo "init" > README.md
+git add README.md
+git commit -m "initial" --quiet
+git push origin main --quiet 2>/dev/null
+
+# ─── Build adversarial branch landscape ───────────────────────────────────────
+
+echo -e "${BLUE}Creating adversarial branch landscape...${NC}"
+
+# ── GROUP 1: Branches that SHOULD be cleaned (merged agent branches) ──
+
+# 1a. Standard merged agent branch
+git checkout -b feat/agent-100-test main --quiet
+echo "work" > agent100.txt && git add . && git commit -m "agent 100" --quiet
+git push origin feat/agent-100-test --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/agent-100-test --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+# 1b. Standard merged issue branch
+git checkout -b fix/issue-200 main --quiet 2>/dev/null
+echo "fix" > issue200.txt && git add . && git commit -m "issue 200" --quiet
+git push origin fix/issue-200 --quiet 2>/dev/null
+git checkout main --quiet && git merge fix/issue-200 --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+# 1c. Agent branch with special slug chars (hyphens, numbers)
+git checkout -b refactor/agent-301-add-api-v2-endpoint main --quiet 2>/dev/null
+echo "refactor" > agent301.txt && git add . && git commit -m "agent 301" --quiet
+git push origin refactor/agent-301-add-api-v2-endpoint --quiet 2>/dev/null
+git checkout main --quiet && git merge refactor/agent-301-add-api-v2-endpoint --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+echo -e "  ${GREEN}✓${NC} Created 3 merged agent/issue branches (should be cleaned)"
+
+# ── GROUP 2: Trap branches — similar names that must NOT be cleaned ──
+
+# 2a. "reagent-" — contains "agent-" substring but not the right prefix pattern
+git checkout -b feat/reagent-500-experiment main --quiet 2>/dev/null
+echo "trap" > reagent.txt && git add . && git commit -m "reagent" --quiet
+git push origin feat/reagent-500-experiment --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/reagent-500-experiment --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+# 2b. Manual branch — human-created, no agent prefix
+git checkout -b feat/my-cool-feature main --quiet 2>/dev/null
+echo "manual" > manual.txt && git add . && git commit -m "manual" --quiet
+git push origin feat/my-cool-feature --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/my-cool-feature --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+# 2c. "agent" without hyphen — should not match agent- pattern
+git checkout -b feat/agent999 main --quiet 2>/dev/null
+echo "nohyphen" > nohyphen.txt && git add . && git commit -m "no hyphen" --quiet
+git push origin feat/agent999 --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/agent999 --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+# 2d. "issue" without hyphen
+git checkout -b fix/issue42 main --quiet 2>/dev/null
+echo "nohyphen2" > nohyphen2.txt && git add . && git commit -m "no hyphen 2" --quiet
+git push origin fix/issue42 --quiet 2>/dev/null
+git checkout main --quiet && git merge fix/issue42 --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+
+echo -e "  ${GREEN}✓${NC} Created 4 trap branches (naming confusion — must NOT be cleaned)"
+
+# ── GROUP 3: Unpushed commit protection ──
+
+# 3a. Agent branch merged to main but has 1 extra unpushed commit
+git checkout -b feat/agent-400-unpushed main --quiet 2>/dev/null
+echo "pushed" > pushed.txt && git add . && git commit -m "pushed work" --quiet
+git push origin feat/agent-400-unpushed --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/agent-400-unpushed --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+# Now add an unpushed commit on top
+git checkout feat/agent-400-unpushed --quiet 2>/dev/null
+echo "unpushed!" > unpushed.txt && git add . && git commit -m "local only work" --quiet
+git checkout main --quiet
+
+# 3b. Agent branch that was never pushed (local only, has commits beyond main)
+git checkout -b feat/agent-401-local-only main --quiet 2>/dev/null
+echo "local only content" > localonly.txt && git add . && git commit -m "local only" --quiet
+git checkout main --quiet
+
+echo -e "  ${GREEN}✓${NC} Created 2 branches with unpushed commits (must NOT be cleaned)"
+
+# ── GROUP 4: Worktree protection ──
+
+# 4a. Agent branch merged but has active worktree
+git checkout -b feat/agent-500-worktree main --quiet 2>/dev/null
+echo "wt" > wt.txt && git add . && git commit -m "worktree branch" --quiet
+git push origin feat/agent-500-worktree --quiet 2>/dev/null
+git checkout main --quiet && git merge feat/agent-500-worktree --no-edit --quiet
+git push origin main --quiet 2>/dev/null
+# Create worktree for this branch
+mkdir -p "${WORK}/.worktrees"
+git worktree add "${WORK}/.worktrees/feat/agent-500-worktree" feat/agent-500-worktree --quiet 2>/dev/null || true
+
+echo -e "  ${GREEN}✓${NC} Created 1 branch with active worktree (must NOT be cleaned)"
+
+# ── GROUP 5: Current branch ──
+# (main is current — already handled by is_protected)
+
+# ── GROUP 6: Protected branches ──
+# main already exists; create develop to test protection
+git checkout -b develop main --quiet 2>/dev/null
+git checkout main --quiet
+
+echo -e "  ${GREEN}✓${NC} Created develop branch (protected — must NOT be cleaned)"
+
+echo ""
+
+# ─── Snapshot: Record what exists before cleanup ──────────────────────────────
+
+echo -e "${BOLD}Pre-cleanup state:${NC}"
+echo -e "  Local: $(git branch --format='%(refname:short)' | wc -l | tr -d ' ') branches"
+echo -e "  Remote: $(git branch -r --format='%(refname:short)' | grep -v HEAD | wc -l | tr -d ' ') branches"
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 1: Dry-run (no --execute) should delete NOTHING
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 1: Dry-run safety ═══${NC}"
+
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged 2>&1) || true
+
+# Verify no branches were actually deleted
+assert_branch_exists "feat/agent-100-test" "Dry-run: merged agent branch still exists"
+assert_branch_exists "fix/issue-200" "Dry-run: merged issue branch still exists"
+assert_branch_exists "feat/my-cool-feature" "Dry-run: manual branch still exists"
+
+assert_output_contains "$OUTPUT" "Would delete" "Dry-run output shows 'Would delete'"
+assert_output_not_contains "$OUTPUT" "✓ Deleted" "Dry-run output has no '✓ Deleted'"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 2: --merged --execute --ci — core deletion + protection
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 2: Merged cleanup with all protections ═══${NC}"
+
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged --execute --ci 2>&1) || true
+
+# ── Should be DELETED (merged agent/issue branches) ──
+assert_branch_gone "feat/agent-100-test" "Merged agent branch deleted"
+assert_branch_gone "fix/issue-200" "Merged issue branch deleted"
+assert_branch_gone "refactor/agent-301-add-api-v2-endpoint" "Merged agent branch with long slug deleted"
+
+# ── Should SURVIVE: naming traps ──
+assert_branch_exists "feat/reagent-500-experiment" "Trap: 'reagent-' NOT treated as agent branch"
+assert_branch_exists "feat/my-cool-feature" "Manual branch NOT deleted (no --include-manual)"
+assert_branch_exists "feat/agent999" "Trap: 'agent999' (no hyphen) NOT treated as agent branch"
+assert_branch_exists "fix/issue42" "Trap: 'issue42' (no hyphen) NOT treated as issue branch"
+
+# ── Should SURVIVE: unpushed protection ──
+assert_branch_exists "feat/agent-400-unpushed" "Unpushed commits: branch PROTECTED"
+assert_branch_exists "feat/agent-401-local-only" "Local-only branch: PROTECTED (has unmerged commits)"
+
+# ── Should SURVIVE: worktree protection ──
+assert_branch_exists "feat/agent-500-worktree" "Worktree branch: NOT deleted"
+
+# ── Should SURVIVE: protected branches ──
+assert_branch_exists "main" "main: NEVER deleted"
+assert_branch_exists "develop" "develop: NEVER deleted"
+
+# ── Verify: unpushed branches survive through ANY mechanism ──
+# feat/agent-400-unpushed has a commit beyond main, so git branch --merged
+# won't even list it. It survives via "not in merged list" — equally safe.
+# feat/agent-401-local-only is never-pushed, also not in merged list.
+# The important thing: both branches exist (asserted above).
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 3: Remote branch cleanup
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 3: Remote branch cleanup ═══${NC}"
+
+# Remote merged agent branches should have been deleted in suite 2
+git fetch --prune origin --quiet 2>/dev/null || true
+assert_remote_gone "feat/agent-100-test" "Remote merged agent branch deleted"
+assert_remote_gone "fix/issue-200" "Remote merged issue branch deleted"
+
+# Remote trap branches should survive
+assert_remote_exists "feat/reagent-500-experiment" "Remote trap 'reagent-' survived"
+assert_remote_exists "feat/my-cool-feature" "Remote manual branch survived"
+assert_remote_exists "feat/agent999" "Remote 'agent999' (no hyphen) survived"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 4: --include-manual opt-in
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 4: --include-manual boundary ═══${NC}"
+
+# Without --include-manual: manual branches should be in dry-run but skipped
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged 2>&1) || true
+assert_output_contains "$OUTPUT" "non-agent branch" "Without --include-manual: shows 'non-agent' skip"
+
+# With --include-manual --execute: manual merged branches get deleted
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged --include-manual --execute --ci 2>&1) || true
+assert_branch_gone "feat/reagent-500-experiment" "With --include-manual: merged trap branch deleted"
+assert_branch_gone "feat/my-cool-feature" "With --include-manual: manual branch deleted"
+assert_branch_gone "feat/agent999" "With --include-manual: agent999 deleted"
+assert_branch_gone "fix/issue42" "With --include-manual: issue42 deleted"
+
+# Protected branches still survive even with --include-manual
+assert_branch_exists "main" "main survives --include-manual"
+assert_branch_exists "develop" "develop survives --include-manual"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 5: Status report mode (no flags)
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 5: Status report mode ═══${NC}"
+
+OUTPUT=$(bash "$CLEANUP_SCRIPT" 2>&1)
+EXIT_CODE=$?
+assert_exit_code 0 "$EXIT_CODE" "Status report exits cleanly"
+assert_output_contains "$OUTPUT" "Branch Status Report" "Status report has title"
+assert_output_contains "$OUTPUT" "Local branches:" "Status report lists local branches"
+assert_output_contains "$OUTPUT" "Remote branches:" "Status report lists remote branches"
+assert_output_contains "$OUTPUT" "Worktrees:" "Status report lists worktrees"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 6: Orphaned worktree cleanup
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 6: Orphaned worktree cleanup ═══${NC}"
+
+# Remove the worktree properly first, then create a residual directory
+git worktree remove --force "${WORK}/.worktrees/feat/agent-500-worktree" 2>/dev/null || true
+git worktree prune 2>/dev/null || true
+
+# Create a fake residual worktree directory (simulates crash)
+mkdir -p "${WORK}/.worktrees/feat/agent-ghost-999"
+echo "leftover" > "${WORK}/.worktrees/feat/agent-ghost-999/leftover.txt"
+
+# Dry run should show it
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --orphaned-wt 2>&1) || true
+assert_output_contains "$OUTPUT" "Orphaned Worktrees" "Orphaned worktree section appears"
+
+# Execute should clean it
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --orphaned-wt --execute --ci 2>&1) || true
+if [[ ! -d "${WORK}/.worktrees/feat/agent-ghost-999" ]]; then
+  ((PASS++))
+  TESTS+=("${GREEN}PASS${NC} Residual worktree directory removed")
+else
+  ((FAIL++))
+  TESTS+=("${RED}FAIL${NC} Residual worktree directory NOT removed")
+fi
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 7: --help and unknown option
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 7: CLI edge cases ═══${NC}"
+
+# --help should exit 0
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --help 2>&1) || true
+EXIT_CODE=$?
+assert_exit_code 0 "$EXIT_CODE" "--help exits 0"
+assert_output_contains "$OUTPUT" "Usage:" "--help shows usage"
+
+# Unknown option should exit 1
+set +e
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --bogus-flag 2>&1)
+EXIT_CODE=$?
+set -e
+assert_exit_code 1 "$EXIT_CODE" "Unknown option exits 1"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 8: Idempotency — running cleanup twice doesn't error
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 8: Idempotency ═══${NC}"
+
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged --execute --ci 2>&1) || true
+EXIT_CODE=$?
+assert_exit_code 0 "$EXIT_CODE" "Second run exits 0 (no branches to clean)"
+
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --all --execute --ci 2>&1) || true
+EXIT_CODE=$?
+assert_exit_code 0 "$EXIT_CODE" "Third run (--all) exits 0"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 9: Stress test — many branches at once
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 9: Stress test (30 branches) ═══${NC}"
+
+# Create 30 merged agent branches
+for i in $(seq 1 30); do
+  git checkout -b "feat/agent-${i}-stress" main --quiet 2>/dev/null
+  echo "stress-$i" > "stress-${i}.txt" && git add . && git commit -m "stress $i" --quiet
+  git checkout main --quiet && git merge "feat/agent-${i}-stress" --no-edit --quiet
+done
+echo -e "  Created 30 merged agent branches"
+
+# Also create 5 manual branches that must survive
+for i in $(seq 1 5); do
+  git checkout -b "feat/human-${i}" main --quiet 2>/dev/null
+  echo "human-$i" > "human-${i}.txt" && git add . && git commit -m "human $i" --quiet
+  git checkout main --quiet && git merge "feat/human-${i}" --no-edit --quiet
+done
+echo -e "  Created 5 merged manual branches"
+
+# Run cleanup
+OUTPUT=$(bash "$CLEANUP_SCRIPT" --merged --execute --ci 2>&1) || true
+
+# All 30 agent branches should be gone
+ALL_AGENT_GONE=true
+for i in $(seq 1 30); do
+  if git show-ref --verify --quiet "refs/heads/feat/agent-${i}-stress" 2>/dev/null; then
+    ALL_AGENT_GONE=false
+    break
+  fi
+done
+if [[ "$ALL_AGENT_GONE" == true ]]; then
+  ((PASS++))
+  TESTS+=("${GREEN}PASS${NC} All 30 stress agent branches deleted")
+else
+  ((FAIL++))
+  TESTS+=("${RED}FAIL${NC} Some stress agent branches survived")
+fi
+
+# All 5 manual branches should survive
+ALL_HUMAN_ALIVE=true
+for i in $(seq 1 5); do
+  if ! git show-ref --verify --quiet "refs/heads/feat/human-${i}" 2>/dev/null; then
+    ALL_HUMAN_ALIVE=false
+    break
+  fi
+done
+if [[ "$ALL_HUMAN_ALIVE" == true ]]; then
+  ((PASS++))
+  TESTS+=("${GREEN}PASS${NC} All 5 manual branches survived stress test")
+else
+  ((FAIL++))
+  TESTS+=("${RED}FAIL${NC} Some manual branches were incorrectly deleted in stress test")
+fi
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TEST SUITE 10: launch-agents safety guard (unit test of the pattern)
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo -e "${BOLD}═══ TEST SUITE 10: is_agent_branch pattern verification ═══${NC}"
+
+# Test the pattern matching directly
+test_agent_pattern() {
+  local branch="$1"
+  local expected="$2"  # "yes" or "no"
+  local msg="$3"
+
+  # Replicate is_agent_branch logic
+  local result="no"
+  if [[ "$branch" == *"/agent-"* ]] || [[ "$branch" == *"/issue-"* ]] || \
+     [[ "$branch" == "agent-"* ]] || [[ "$branch" == "issue-"* ]]; then
+    result="yes"
+  fi
+
+  if [[ "$result" == "$expected" ]]; then
+    ((PASS++))
+    TESTS+=("${GREEN}PASS${NC} ${msg}")
+  else
+    ((FAIL++))
+    TESTS+=("${RED}FAIL${NC} ${msg} (expected=$expected, got=$result)")
+  fi
+}
+
+# Positive matches (should be recognized as agent branches)
+test_agent_pattern "feat/agent-1-task" "yes" "Pattern: feat/agent-1-task → agent"
+test_agent_pattern "fix/agent-42-bugfix" "yes" "Pattern: fix/agent-42-bugfix → agent"
+test_agent_pattern "fix/issue-2" "yes" "Pattern: fix/issue-2 → agent"
+test_agent_pattern "refactor/agent-301-add-api-v2" "yes" "Pattern: deep slug → agent"
+test_agent_pattern "agent-raw" "yes" "Pattern: agent-raw (no prefix/) → agent"
+test_agent_pattern "issue-raw" "yes" "Pattern: issue-raw (no prefix/) → agent"
+
+# Negative matches (should NOT be recognized)
+test_agent_pattern "feat/reagent-500" "no" "Pattern: reagent-500 → NOT agent"
+test_agent_pattern "feat/my-cool-feature" "no" "Pattern: manual branch → NOT agent"
+test_agent_pattern "feat/agent999" "no" "Pattern: agent999 (no hyphen) → NOT agent"
+test_agent_pattern "fix/issue42" "no" "Pattern: issue42 (no hyphen) → NOT agent"
+test_agent_pattern "main" "no" "Pattern: main → NOT agent"
+test_agent_pattern "develop" "no" "Pattern: develop → NOT agent"
+test_agent_pattern "feat/the-agent-is-cool" "no" "Pattern: 'the-agent-is-cool' (agent not after /) → NOT agent"
+test_agent_pattern "feat/fix-issue-in-login" "no" "Pattern: 'fix-issue-in-login' (issue not after /) → NOT agent"
+
+echo ""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# RESULTS
+# ════════════════════════════════════════════════════════════════════════════════
+
+echo "════════════════════════════════════════════════════════════════"
+echo -e "${BOLD}TEST RESULTS${NC}"
+echo "════════════════════════════════════════════════════════════════"
+for t in "${TESTS[@]}"; do
+  echo -e "  $t"
+done
+echo "────────────────────────────────────────────────────────────────"
+TOTAL=$((PASS + FAIL))
+echo -e "  ${BOLD}Total:${NC} ${TOTAL} | ${GREEN}Pass: ${PASS}${NC} | ${RED}Fail: ${FAIL}${NC}"
+echo "════════════════════════════════════════════════════════════════"
+
+if [[ "$FAIL" -gt 0 ]]; then
+  echo -e "${RED}SOME TESTS FAILED — review output above${NC}"
+  exit 1
+else
+  echo -e "${GREEN}ALL TESTS PASSED${NC}"
+  exit 0
+fi

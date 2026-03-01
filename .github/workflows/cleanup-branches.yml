@@ -1,0 +1,117 @@
+name: Cleanup Branches
+
+on:
+  # Job 1: Immediate cleanup when PR closes
+  pull_request:
+    types: [closed]
+
+  # Job 2: Scheduled stale cleanup
+  schedule:
+    - cron: '0 4 * * *'  # Daily at 4 AM UTC
+
+  # Manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ─── Job 1: Clean up branch when PR closes ────────────────────────────
+  cleanup-on-pr-close:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch eligibility
+        id: check
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          # Only clean agent-/issue- prefixed branches from this repo (not forks)
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: PR from fork"
+          elif [[ "$BRANCH" == *"/agent-"* ]] || [[ "$BRANCH" == *"/issue-"* ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Eligible: $BRANCH"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping non-agent branch: $BRANCH"
+          fi
+
+      - name: Delete branch
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "Deleting: $BRANCH"
+          # GitHub's delete_branch_on_merge handles most cases;
+          # this catches closed-without-merge PRs
+          gh api "repos/${{ github.repository }}/git/refs/heads/${BRANCH}" \
+            -X DELETE 2>/dev/null || echo "Branch already deleted"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Job 2: Scheduled stale branch cleanup ────────────────────────────
+  cleanup-stale:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete merged remote branches
+        run: |
+          git fetch --prune origin
+          DELETED=0
+          SKIPPED=0
+
+          for branch in $(git branch -r --merged origin/main | grep 'origin/' | grep -v 'origin/main' | grep -v 'origin/HEAD' | sed 's|origin/||' | xargs); do
+            # Safety: only delete agent-/issue- prefixed branches
+            if [[ "$branch" == *"/agent-"* ]] || [[ "$branch" == *"/issue-"* ]]; then
+              echo "Deleting merged: $branch"
+              git push origin --delete "$branch" 2>/dev/null || true
+              ((DELETED++)) || true
+            else
+              echo "Skipping non-agent branch: $branch"
+              ((SKIPPED++)) || true
+            fi
+          done
+
+          echo "Deleted: $DELETED, Skipped: $SKIPPED"
+
+      - name: Delete stale remote branches (14+ days inactive)
+        run: |
+          CUTOFF=$(date -d '14 days ago' +%s)
+          DELETED=0
+
+          for ref in $(git for-each-ref --sort=committerdate --format='%(committerdate:unix)|%(refname:short)' refs/remotes/origin/ | grep -v 'origin/HEAD' | grep -v "origin/main"); do
+            EPOCH=$(echo "$ref" | cut -d'|' -f1)
+            BRANCH=$(echo "$ref" | cut -d'|' -f2)
+            BARE="${BRANCH#origin/}"
+
+            [[ "$BARE" == "main" || "$BARE" == "master" ]] && continue
+
+            # Only process old branches
+            [[ "$EPOCH" -ge "$CUTOFF" ]] && continue
+
+            # Safety: only agent-/issue- prefixed
+            if [[ "$BARE" != *"/agent-"* ]] && [[ "$BARE" != *"/issue-"* ]]; then
+              echo "Skipping non-agent stale branch: $BARE"
+              continue
+            fi
+
+            # Safety: skip if has open PR
+            PR_COUNT=$(gh pr list --state open --head "$BARE" --json number --jq 'length' 2>/dev/null || echo "0")
+            if [[ "$PR_COUNT" -gt 0 ]]; then
+              echo "Skipping (has open PR): $BARE"
+              continue
+            fi
+
+            echo "Deleting stale: $BARE (inactive since $(date -d @$EPOCH +%Y-%m-%d))"
+            git push origin --delete "$BARE" 2>/dev/null || true
+            ((DELETED++)) || true
+          done
+
+          echo "Deleted stale: $DELETED"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

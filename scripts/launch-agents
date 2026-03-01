@@ -292,12 +292,28 @@ fi
 # ─── Pre-check: Clean Old Branches ────────────────────────────────────
 # When re-running agents for the same issues, old remote branches cause
 # push conflicts. Clean them up first.
+# Safety: only agent-prefixed branches are cleaned; unpushed commits block deletion.
 
 echo -e "${BLUE}→ Pre-check: cleaning stale branches...${NC}"
 
 for num in "${ISSUES[@]}"; do
   BRANCH=$(iget "$num" "branch")
   WT_PATH="${WORKTREE_DIR}/${BRANCH}"
+
+  # Safety check 1: only process agent-/issue- prefixed branches
+  if [[ "$BRANCH" != *"/agent-"* ]] && [[ "$BRANCH" != *"/issue-"* ]]; then
+    echo -e "  ${YELLOW}Skipping non-agent branch: ${BRANCH}${NC}"
+    continue
+  fi
+
+  # Safety check 2: unpushed commit protection
+  if git show-ref --verify --quiet "refs/heads/${BRANCH}" 2>/dev/null; then
+    UNPUSHED=$(git log "origin/${BRANCH}..${BRANCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$UNPUSHED" -gt 0 ]]; then
+      echo -e "  ${RED}WARNING: ${BRANCH} has ${UNPUSHED} unpushed commit(s) — skipping${NC}"
+      continue
+    fi
+  fi
 
   # Remove existing worktree
   if [[ -d "$WT_PATH" ]]; then
@@ -306,8 +322,10 @@ for num in "${ISSUES[@]}"; do
   fi
 
   # Delete local branch if exists
-  git branch -D "$BRANCH" 2>/dev/null && \
-    echo -e "  ${DIM}Deleted local branch: ${BRANCH}${NC}" || true
+  if ! git branch -D "$BRANCH" 2>/dev/null; then
+    git update-ref -d "refs/heads/${BRANCH}" 2>/dev/null || true
+  fi
+  echo -e "  ${DIM}Deleted local branch: ${BRANCH}${NC}"
 
   # Delete remote branch if exists
   if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
