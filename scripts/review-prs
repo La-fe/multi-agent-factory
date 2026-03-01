@@ -213,11 +213,23 @@ if [[ "$AUTO_MERGE" == true && ${#READY_PRS[@]} -gt 0 ]]; then
   for pr_num in "${READY_PRS[@]}"; do
     echo -e "  ${CYAN}Merging PR #${pr_num}...${NC}"
 
-    if gh pr merge "$pr_num" --squash 2>/dev/null; then
+    if gh pr merge "$pr_num" --squash --delete-branch 2>/dev/null; then
       echo -e "  ${GREEN}✓ PR #${pr_num} merged${NC}"
-      # Clean up remote branch (local branch may be held by worktree)
+      # --delete-branch handles remote; now clean up local worktree + branch
       PR_BRANCH=$(echo "$PRS_JSON" | jq -r ".[] | select(.number == ${pr_num}) | .headRefName")
-      git push origin --delete "$PR_BRANCH" 2>/dev/null || true
+
+      # Clean up local worktree if exists
+      local_wt=".worktrees/${PR_BRANCH}"
+      if [[ -d "$local_wt" ]]; then
+        git worktree remove --force "$local_wt" 2>/dev/null || true
+      fi
+
+      # Clean up local branch (git branch -D + update-ref fallback)
+      if ! git branch -D "$PR_BRANCH" 2>/dev/null; then
+        git update-ref -d "refs/heads/${PR_BRANCH}" 2>/dev/null || true
+      fi
+
+      git fetch --prune origin 2>/dev/null || true
       # Transition linked issue label: status:review → status:done
       LINKED_ISSUE=$(gh pr view "$pr_num" --json body --jq '.body' 2>/dev/null | grep -oiE '(fixes|closes|resolves) #[0-9]+' | grep -oE '[0-9]+' | head -1)
       if [[ -n "$LINKED_ISSUE" ]]; then

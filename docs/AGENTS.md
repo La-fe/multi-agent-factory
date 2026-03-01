@@ -193,6 +193,7 @@ scripts/orchestrator owner/repo --label "status:ready"
 | `scripts/review-prs` | Batch PR review with auto-merge and auto-fix |
 | `scripts/monitor-agents` | Real-time tmux monitoring + auto-approve |
 | `scripts/committer` | Multi-agent safe commit helper |
+| `scripts/cleanup-branches` | Safe branch lifecycle cleanup (dry-run default) |
 | `scripts/setup-hooks` | Install git hooks |
 
 ### Agent Definitions
@@ -302,6 +303,26 @@ status:done           Issue resolved, PR merged
 - `docs/agent-{N}-{slug}` — docs labels
 
 The `agent-` prefix distinguishes AI-created branches from human-created ones (e.g. `feat/manual-feature`).
+
+### Branch Lifecycle
+
+Branches are automatically cleaned up (no manual action needed):
+- **On merge**: `--delete-branch` flag auto-deletes remote + local cleanup
+- **Scheduled CI**: Daily workflow cleans merged/stale remote branches
+- **GitHub setting**: `delete_branch_on_merge=true` auto-deletes head branch on PR merge
+
+Manual cleanup tool:
+```bash
+scripts/cleanup-branches              # View status report
+scripts/cleanup-branches --all        # Preview cleanable branches (dry-run)
+scripts/cleanup-branches --all --execute  # Execute cleanup
+```
+
+Safety rules:
+- Only `*/agent-*` or `*/issue-*` prefixed branches are auto-cleaned
+- Branches with unpushed commits are never auto-deleted
+- Branches with active worktrees are never deleted
+- Human-created branches require `--include-manual` explicit opt-in
 
 ### Safety Mechanisms
 
