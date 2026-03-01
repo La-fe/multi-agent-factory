@@ -14,7 +14,7 @@ describe("GET /version", () => {
     const res = await request(createApp()).get("/version");
     expect(res.status).toBe(200);
     expect(res.body.name).toBe("multi-agent-factory");
-    expect(res.body.version).toBe("0.1.0");
+    expect(res.body.version).toBe("2.1.0");
   });
 
   it("includes Node.js version", async () => {

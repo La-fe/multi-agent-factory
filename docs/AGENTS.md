@@ -5,7 +5,7 @@
 
 ## Project Structure
 
-- Source code: `src/` (API routes, services, utilities)
+- Source code: `src/` (Express endpoints: health, ping, version, uptime)
 - Tests: colocated `*.test.ts` next to source files
 - Scripts: `scripts/` (committer, orchestrator, create-worktree, review-prs)
 - CI/CD: `.github/workflows/`
@@ -29,7 +29,7 @@
 
 - **Always use `scripts/committer`** for commits:
   ```bash
-  scripts/committer "fix(api): handle missing todo ID" src/routes/todos.ts src/routes/todos.test.ts
+  scripts/committer "fix(api): handle missing ID in health check" src/health.ts src/health.test.ts
   ```
 - Follow Conventional Commits: `feat|fix|refactor|test|docs|chore(scope): message`
 - Group related changes; avoid bundling unrelated refactors
@@ -87,7 +87,7 @@ git worktree add -b feat/agent-2-task /tmp/agent-2 main
 # Agent works in isolation
 cd /tmp/agent-1
 # ... make changes ...
-scripts/committer "feat(api): add pagination" src/routes/todos.ts
+scripts/committer "feat(api): add metrics endpoint" src/metrics.ts src/metrics.test.ts
 
 # Push and create PR
 git push -u origin feat/agent-1-task

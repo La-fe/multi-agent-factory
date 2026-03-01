@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-factory",
-  "version": "0.1.0",
+  "version": "2.1.0",
   "description": "Multi-agent development factory — Peter Steinberger style. 30 AI agents, 627 commits/day.",
   "type": "module",
   "engines": {

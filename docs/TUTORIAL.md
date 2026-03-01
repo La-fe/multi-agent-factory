@@ -13,7 +13,7 @@
 4. [单 Agent 工作流](#4-单-agent-工作流)
 5. [多 Agent 并行开发](#5-多-agent-并行开发)
 6. [PR 审查与合并](#6-pr-审查与合并)
-7. [实战演练：添加 Tag 功能](#7-实战演练添加-tag-功能)
+7. [实战演练：添加监控系统](#7-实战演练添加监控系统)
 8. [进阶：自动化循环](#8-进阶自动化循环)
 
 ---
@@ -98,10 +98,13 @@ my-project/
 │   ├── workflows/ci.yml   ← CI 质量门
 │   └── ISSUE_TEMPLATE/    ← Issue 模板
 ├── src/                   ← 业务代码
-│   ├── app.ts             ← Express 路由
-│   ├── store.ts           ← 数据存储
-│   ├── app.test.ts        ← API 测试
-│   └── store.test.ts      ← 单元测试
+│   ├── index.ts           ← 入口（启动 HTTP 服务）
+│   ├── app.ts             ← Express 路由注册
+│   ├── health.ts          ← GET /health 端点
+│   ├── ping.ts            ← GET /ping 端点
+│   ├── version.ts         ← GET /version 端点
+│   ├── uptime.ts          ← GET /uptime 端点
+│   └── *.test.ts          ← 各端点的单元测试
 └── vitest.config.ts       ← 测试配置（70% 覆盖率门槛）
 ```
 
@@ -115,7 +118,7 @@ git commit -m "..."
 
 安全 commit：
 ```bash
-scripts/committer "feat(api): add pagination" src/routes/todos.ts src/routes/todos.test.ts
+scripts/committer "feat(api): add metrics endpoint" src/metrics.ts src/metrics.test.ts
 ```
 
 `committer` 做了什么：
@@ -147,156 +150,217 @@ scripts/committer "feat(api): add pagination" src/routes/todos.ts src/routes/tod
 
 在上多 Agent 之前，先掌握单 Agent 的完整循环。
 
-### 4.1 从 Issue 开始
+> **项目已内置** `/health`、`/ping`、`/version`、`/uptime` 四个端点。
+> 下面用一个**尚未实现**的 `GET /metrics` 端点作为练习。
+
+### 4.1 推荐方式：脚本自动化（无需手动创建分支）
+
+整个流程只需 3 步：**创建 Issue → 运行脚本 → 审查合并**。
+分支、worktree、提交、推送、创建 PR 全部由脚本 + Agent 自动完成。
 
 ```bash
-# 创建一个 Issue
-gh issue create --title "feat(api): add health check endpoint" \
-  --body "Add GET /health that returns { status: 'ok' }"
+# Step 1: 创建 Issue 并打标签
+gh issue create --title "feat(api): add metrics endpoint" \
+  --body "Add GET /metrics that returns { requests_total: number, uptime_seconds: number, version: string }
+
+## Suspected files
+- src/metrics.ts (new)
+- src/app.ts (add route)
+
+## Acceptance criteria
+- [ ] GET /metrics returns 200 with JSON
+- [ ] Unit tests cover happy path
+- [ ] pnpm check && pnpm test passes"
+
+# 将 53 替换为上一步返回的 Issue 编号
+gh issue edit 53 --add-label "status:ready"
 ```
 
-### 4.2 启动 Claude Code
+```bash
+# Step 2: 启动编排器（自动创建 worktree + 分支 + 启动 Agent + 提交 + 推送 + 创建 PR）
+scripts/orchestrator --label "status:ready" --limit 1
+```
 
 ```bash
+# Step 3: 审查并合并
+scripts/review-prs --auto-merge
+```
+
+**就这么简单。** 编排器自动完成了：
+1. 从 GitHub 拉取 `status:ready` 的 Issue
+2. 创建独立 worktree + 分支（`feat/agent-N-add-metrics-endpoint`）
+3. 启动 Claude Agent，Agent 读取 Issue → 写代码 → 写测试 → 运行质量门 → 提交 → 推送 → 创建 PR
+4. 更新 Issue 标签（`status:ready` → `status:in-progress` → `status:review`）
+
+### 4.2 可视化方式：实时观看 Agent 工作
+
+如果你想看 Agent 在干什么（推荐初次使用时体验）：
+
+```bash
+# iTerm2 标签页模式 — 每个 Agent 一个标签页
+scripts/launch-agents --issues <N>
+
+# 或交互模式 — 你可以和 Agent 对话
+scripts/launch-agents --issues <N> --interactive
+```
+
+### 4.3 手动方式（学习用，理解底层原理）
+
+<details>
+<summary>点击展开手动流程</summary>
+
+这是编排器背后的底层操作。了解它有助于调试，但日常不需要手动执行。
+
+```bash
+# 1. 创建 Issue
+gh issue create --title "feat(api): add metrics endpoint" \
+  --body "Add GET /metrics that returns { requests_total: number, uptime_seconds: number, version: string }"
+
+# 2. 创建 worktree（脚本自动安装依赖 + hooks）
+scripts/create-worktree feat/metrics-endpoint
+
+# 3. 进入 worktree，启动 Claude Code
+cd .worktrees/feat/metrics-endpoint
 claude
+
+# 4. 在 Claude Code 中对话：
+#    > 读最新的 issue，然后实现它。完成后用 scripts/committer 提交。
+
+# 5. Agent 完成后推送并创建 PR
+git push -u origin feat/metrics-endpoint
+gh pr create --title "feat(api): add metrics endpoint" --body "Closes #N"
+
+# 6. 审查 + 合并（在另一个 Claude Code session）
+#    > /reviewpr <PR#>
+#    > /landpr <PR#>
+
+# 7. 清理 worktree
+cd ../..
+git worktree remove .worktrees/feat/metrics-endpoint
 ```
 
-在 Claude Code 中：
-```
-> 读 issue #1，然后实现它。完成后用 scripts/committer 提交。
-```
+</details>
 
-Claude 会：
-1. 读取 AGENTS.md（自动，因为有 CLAUDE.md 符号链接）
-2. 用 `gh issue view 1` 读 issue
-3. 编写代码 + 测试
-4. 运行 `pnpm test` 验证
-5. 用 `scripts/committer "feat(api): add health check (#1)" src/app.ts src/app.test.ts` 提交
-
-### 4.3 创建 PR
+### 4.4 审查与合并命令
 
 ```bash
-git push -u origin feat/health-check
-gh pr create --title "feat: add health check endpoint" --body "Closes #1"
+# 批量审查所有开放 PR
+scripts/review-prs
+
+# 审查 + 自动合并通过的 PR
+scripts/review-prs --auto-merge
+
+# 或在 Claude Code 中手动审查指定 PR
+# > /reviewpr <PR#>
+# > /landpr <PR#>
 ```
-
-### 4.4 审查 PR
-
-在另一个 Claude Code session 中：
-```
-> /reviewpr 1
-```
-
-Claude 会按 `.claude/prompts/reviewpr.md` 的 9 步流程审查 PR。
-
-### 4.5 合并 PR
-
-```
-> /landpr 1
-```
-
-Claude 会按 `.claude/prompts/landpr.md` 的完整流程：rebase → test → merge。
 
 ---
 
 ## 5. 多 Agent 并行开发
 
-这是核心。当你有一个大功能需要实现时：
+这是核心。当你有一个大功能需要实现时，你只需要做 3 件事：
+**拆解需求 → 运行脚本 → 审查合并**。分支、worktree、提交、PR 全自动。
 
-### 5.1 第一步：分解任务
+### 5.1 第一步：拆解任务（/decompose）
 
-```
-> /decompose "给 TODO API 添加标签系统：每个 todo 可以有多个标签，
-> 支持按标签筛选，标签有颜色属性"
-```
-
-Claude 会输出类似：
-
-| Wave | Agent | 分支 | 任务 | 文件 |
-|------|-------|------|------|------|
-| 1 | A | feat/tag-model | Tag 数据模型 | src/models/tag.ts |
-| 1 | B | feat/tag-store | Tag 存储层 | src/stores/tag-store.ts |
-| 1 | C | feat/todo-tags | Todo-Tag 关联 | src/store.ts |
-| 2 | D | feat/tag-routes | Tag API 路由 | src/routes/tags.ts |
-| 2 | E | feat/tag-filter | 按标签筛选 | src/routes/todos.ts |
-
-### 5.2 第二步：创建 Issues
+> **前提**：必须在项目目录内运行 `claude`，`/decompose` 命令才能被识别。
+> Claude Code 从当前目录的 `.claude/prompts/` 加载自定义命令。
 
 ```bash
-gh issue create --title "feat: Tag data model" --body "..."
-gh issue create --title "feat: Tag store" --body "..."
-gh issue create --title "feat: Todo-Tag association" --body "..."
+# 在项目目录内启动 Claude Code
+cd my-project
+claude
 ```
 
-### 5.3 第三步：创建 Worktrees
+在 Claude Code 中输入：
+```
+> /decompose "给 API 添加监控系统：请求计数器、响应时间 P99、
+> 错误率统计，并提供 GET /metrics 聚合端点"
+```
+
+Claude 会：
+1. 分析功能涉及的文件和依赖关系
+2. 按 Wave 编排（无依赖 → Wave 1 并行，有依赖 → Wave 2 串行）
+3. **自动用 `gh issue create` 创建所有子 Issue 并打上 `status:ready` 标签**
+
+输出类似：
+
+| Wave | Issue | 任务 | 文件 |
+|------|-------|------|------|
+| 1 | `feat(api): add request counter middleware` | 请求计数中间件 | src/counter.ts |
+| 1 | `feat(api): add response timer middleware` | 响应时间追踪 | src/timer.ts |
+| 1 | `feat(api): add error tracker middleware` | 错误率统计 | src/error-tracker.ts |
+| 2 | `feat(api): add /metrics aggregation endpoint` | 聚合 /metrics 端点 | src/metrics.ts, MODIFY src/app.ts |
+
+### 5.2 第二步：启动编排器
 
 ```bash
-# Wave 1 — 三个独立任务，可以同时开工
-git worktree add -b feat/tag-model .worktrees/agent-a main
-git worktree add -b feat/tag-store .worktrees/agent-b main
-git worktree add -b feat/todo-tags .worktrees/agent-c main
+# Wave 1 — 3 个 Issue 并行处理
+# 编排器自动：创建 worktree → 启动 Agent → Agent 写代码/测试/提交/推送/创建 PR
+scripts/orchestrator --label "status:ready" --limit 3 --max-parallel 3
+
+# 审查并合并 Wave 1 的 PR
+scripts/review-prs --auto-merge
 ```
-
-### 5.4 第四步：启动多个 Claude Code
-
-**终端 1（Agent A）：**
-```bash
-cd .worktrees/agent-a
-claude "实现 Issue #2: Tag 数据模型。包含 id, name, color 字段。写测试。完成后用 scripts/committer 提交并 push。"
-```
-
-**终端 2（Agent B）：**
-```bash
-cd .worktrees/agent-b
-claude "实现 Issue #3: Tag 存储层。CRUD 操作。写测试。完成后用 scripts/committer 提交并 push。"
-```
-
-**终端 3（Agent C）：**
-```bash
-cd .worktrees/agent-c
-claude "实现 Issue #4: 给 Todo 添加 tags 字段。更新 store。写测试。完成后用 scripts/committer 提交并 push。"
-```
-
-三个 Agent **同时工作**，互不干扰（因为各自在独立 worktree 中）。
-
-### 5.5 第五步：创建 PRs
-
-每个 Agent 完成后：
-```bash
-# Agent A 完成
-cd .worktrees/agent-a
-git push -u origin feat/tag-model
-gh pr create --title "feat: Tag data model (#2)" --body "Closes #2"
-```
-
-### 5.6 第六步：审查 + 合并
 
 ```bash
-# 在主目录审查
-cd /path/to/project
-claude "/reviewpr 5"   # 审查 Agent A 的 PR
-claude "/landpr 5"     # 合并
-claude "/reviewpr 6"   # 审查 Agent B 的 PR
-claude "/landpr 6"     # 合并
+# Wave 2 — 处理依赖 Wave 1 的任务
+scripts/orchestrator --label "status:ready" --limit 2
+
+# 最终审查
+scripts/review-prs --auto-merge
 ```
 
-### 5.7 第七步：清理 Worktrees
+**整个过程中你不需要手动创建分支、worktree、提交或 PR。**
+
+### 5.3 可选：可视化模式（实时观看）
+
+如果你想看每个 Agent 的实时输出：
 
 ```bash
-git worktree remove .worktrees/agent-a
-git worktree remove .worktrees/agent-b
-git worktree remove .worktrees/agent-c
+# iTerm2 标签页 — 每个 Agent 一个标签页
+scripts/launch-agents --label "status:ready" --mode tab
+
+# tmux — SSH 友好，可分离
+scripts/launch-agents --label "status:ready" --mode tmux
+
+# 监控 Agent 状态 + 自动批准权限提示
+scripts/monitor-agents --auto-approve
 ```
 
-### 5.8 第八步：启动 Wave 2
+### 5.4 可选：手动流程（理解底层原理）
 
-Wave 1 全部合并后，启动 Wave 2（依赖 Wave 1 的结果）：
+<details>
+<summary>点击展开手动流程（日常不需要，仅供学习）</summary>
+
+这是编排器背后的底层操作：
+
 ```bash
-git worktree add -b feat/tag-routes .worktrees/agent-d main
-git worktree add -b feat/tag-filter .worktrees/agent-e main
+# 1. 手动创建 Issue
+gh issue create --title "feat(api): add request counter middleware" --body "..."
 
-# 在各自 worktree 中启动新的 Claude Code session
+# 2. 创建 worktree（自动安装依赖 + hooks）
+scripts/create-worktree feat/request-counter
+
+# 3. 进入 worktree 启动 Agent
+cd .worktrees/feat/request-counter
+claude "实现 Issue #N: 请求计数中间件。写测试。完成后用 scripts/committer 提交并 push。"
+
+# 4. Agent 完成后推送并创建 PR
+git push -u origin feat/request-counter
+gh pr create --title "feat(api): add request counter middleware (#N)" --body "Closes #N"
+
+# 5. 审查合并
+scripts/review-prs --auto-merge
+
+# 6. 清理
+git worktree remove .worktrees/feat/request-counter
 ```
+
+多个 Agent 就是重复上述步骤，每个在不同终端窗口运行。
+
+</details>
 
 ---
 
@@ -307,7 +371,7 @@ git worktree add -b feat/tag-filter .worktrees/agent-e main
 输出结构：
 ```
 A) 推荐: READY FOR /landpr
-B) 变更: 新增 GET /health 端点
+B) 变更: 新增 GET /metrics 端点
 C) 优点: 测试覆盖完整, 错误处理正确
 D) 问题:
    1. [NIT] 可以用 const 替代 let (src/app.ts:15)
@@ -330,9 +394,9 @@ F) 后续: 无
 
 ---
 
-## 7. 实战演练：添加 Tag 功能
+## 7. 实战演练：添加监控系统
 
-现在你来试一次。目标：给 TODO API 添加标签系统。
+现在你来试一次。目标：给 API 添加请求监控（计数器 + 响应时间 + 错误率 + /metrics 聚合端点）。
 
 ### 准备
 
@@ -340,20 +404,27 @@ F) 后续: 无
 # 确保主分支干净
 git checkout main && git pull
 
-# 分解任务
-claude "/decompose 给 TODO API 添加标签系统"
+# 在项目目录中启动 Claude Code，然后分解任务
+claude "/decompose 给 API 添加监控系统：请求计数、响应时间 P99、错误率统计、GET /metrics 聚合端点"
 ```
 
 ### 执行
 
-按 Claude 输出的分解方案：
+`/decompose` 会自动创建 Issue 并打标签，然后你只需运行：
 
-1. 创建 Issues
-2. 创建 Worktrees
-3. 启动 2-3 个 Claude Code sessions（并行）
-4. 等待完成
-5. 审查每个 PR
-6. 合并
+```bash
+# Wave 1 — 并行处理无依赖的任务
+scripts/orchestrator --label "status:ready" --max-parallel 3
+
+# 审查合并
+scripts/review-prs --auto-merge
+
+# Wave 2 — 处理依赖前序任务的 Issue
+scripts/orchestrator --label "status:ready"
+
+# 最终审查
+scripts/review-prs --auto-merge
+```
 
 ### 验证
 
@@ -389,17 +460,18 @@ Peter 的 627 次/天是因为 AI 在**自动循环**。你可以用 Ralph Wiggu
 ### 8.2 批量 Issue 处理
 
 ```bash
-# 创建 5 个 Issues
+# 创建 5 个 Issues 并打标签
 for i in $(seq 1 5); do
-  gh issue create --title "fix: issue $i" --body "..."
+  ISSUE_URL=$(gh issue create --title "fix: issue $i" --body "...")
+  ISSUE_NUM=$(basename "$ISSUE_URL")
+  gh issue edit "$ISSUE_NUM" --add-label "status:ready"
 done
 
-# 启动 5 个并行 Agent
-for i in $(seq 1 5); do
-  git worktree add -b fix/issue-$i .worktrees/agent-$i main
-  # 在新终端中启动
-  echo "cd .worktrees/agent-$i && claude 'Fix issue #$i. Test. Commit. Push. Create PR.'"
-done
+# 用编排器批量并行处理（自动创建 worktree + 分支 + Agent）
+scripts/orchestrator --label "status:ready" --limit 5 --max-parallel 5 --yes
+
+# 批量审查 + 合并
+scripts/review-prs --auto-merge
 ```
 
 ### 8.3 Peter 的完整模式
@@ -433,5 +505,7 @@ Peter 的循环 =
 | `git worktree remove path` | 清理工作区 |
 | `/reviewpr <PR>` | AI 审查 PR |
 | `/landpr <PR>` | AI 合并 PR |
-| `/decompose <feature>` | AI 分解任务 |
+| `/decompose <feature>` | AI 分解任务（需在项目目录内运行 claude） |
+| `/decompose-eval <结果>` | 评估拆解质量（12 维度 + 8 Veto 规则） |
 | `/issue <number>` | AI 分析 Issue |
+| `/triage <number>` | AI Issue 分类 |

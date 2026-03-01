@@ -32,9 +32,9 @@ Technical explanation with file:line references.
 
 ### Proposed Changes
 ```
-src/routes/todos.ts:42  — add null check for todo.id
-src/services/store.ts:18 — handle empty array edge case
-test/todos.test.ts       — add regression test
+src/health.ts:12         — add null check for degraded status
+src/app.ts:18            — handle missing route gracefully
+src/health.test.ts       — add regression test
 ```
 
 ### Parallelizable?

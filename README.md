@@ -109,23 +109,23 @@ gh auth status
    内容: 感觉有点慢
 
 ✅ 好 Issue:
-   标题: fix(api): GET /todos response time > 500ms under 100 concurrent requests
+   标题: fix(api): GET /health response missing error details when service degraded
    内容:
    ## Summary
-   GET /todos 在 100 并发时响应超过 500ms，需要优化到 < 100ms。
+   GET /health 在依赖服务不可用时仍返回 status: "ok"，应返回 "degraded" 并包含错误详情。
 
    ## Steps to reproduce
    1. `pnpm dev`
-   2. `ab -n 1000 -c 100 http://localhost:3000/todos`
-   3. 观察 p99 > 500ms
+   2. 模拟下游服务超时
+   3. `curl http://localhost:3000/health` → 仍返回 `{"status":"ok"}`
 
    ## Suspected files
-   - src/store.ts (getTodos 全表扫描)
-   - src/routes/todos.ts (缺少缓存)
+   - src/health.ts (缺少依赖检查逻辑)
+   - src/app.ts (可能需要注入依赖状态)
 
    ## Acceptance criteria
-   - [ ] p99 < 100ms under 100 concurrent requests
-   - [ ] 添加基准测试
+   - [ ] 依赖服务异常时返回 `{"status":"degraded","checks":{...}}`
+   - [ ] 添加测试覆盖 degraded 场景
    - [ ] `pnpm check && pnpm test` passes
 ```
 
@@ -175,7 +175,10 @@ gh auth status
 
 #### /decompose 命令
 
-在 Claude Code 中运行 `/decompose 添加用户认证系统`，Agent 会自动：
+> **重要**：必须在项目根目录内运行 `claude`，`/decompose` 等自定义命令才能被识别。
+> Claude Code 从当前工作目录的 `.claude/prompts/` 加载命令。
+
+在 Claude Code 中运行 `/decompose 添加监控系统`，Agent 会自动：
 
 1. 分析功能涉及的文件
 2. 按文件依赖关系分组
@@ -184,28 +187,27 @@ gh auth status
 
 #### 完整实例：添加用户认证系统
 
-原始需求："给 TODO API 添加 JWT 用户认证"
+原始需求："给 API 添加请求监控系统（计数器 + 响应时间 + 错误率 + /metrics 聚合端点）"
 
 拆解结果：
 
 **Wave 1 — 并行（3 个 Agent 同时工作）**
 
 
-| Agent | Issue                                          | 文件                                              | 说明          |
-| ----- | ---------------------------------------------- | ----------------------------------------------- | ----------- |
-| A     | `feat(auth): add User model and store`         | `src/user.ts`, `src/user.test.ts`               | 用户数据层       |
-| B     | `feat(auth): add JWT token utilities`          | `src/jwt.ts`, `src/jwt.test.ts`                 | Token 签发/验证 |
-| C     | `feat(auth): add auth routes (register/login)` | `src/auth-routes.ts`, `src/auth-routes.test.ts` | 注册/登录接口     |
+| Agent | Issue                                             | 文件                                                          | 说明        |
+| ----- | ------------------------------------------------- | ----------------------------------------------------------- | --------- |
+| A     | `feat(api): add request counter middleware`        | `src/counter.ts`, `src/counter.test.ts`                     | 请求计数      |
+| B     | `feat(api): add response time tracking middleware` | `src/timer.ts`, `src/timer.test.ts`                         | 响应时间 P99  |
+| C     | `feat(api): add error rate tracking middleware`    | `src/error-tracker.ts`, `src/error-tracker.test.ts`         | 错误率统计     |
 
 
 **Wave 2 — 串行（Wave 1 合并后）**
 
 
-| Agent | Issue                                 | 文件                                       | 依赖                 |
-| ----- | ------------------------------------- | ---------------------------------------- | ------------------ |
-| D     | `feat(auth): add auth middleware`     | `src/middleware.ts`, MODIFY `src/app.ts` | 依赖 Wave 1 的 jwt.ts |
-| E     | `feat(auth): protect existing routes` | MODIFY `src/routes/todos.ts`             | 依赖 middleware      |
-| F     | `test(auth): add integration tests`   | `src/auth.integration.test.ts`           | 依赖以上全部             |
+| Agent | Issue                                       | 文件                                              | 依赖            |
+| ----- | ------------------------------------------- | ----------------------------------------------- | ------------- |
+| D     | `feat(api): add /metrics aggregation endpoint` | `src/metrics.ts`, `src/metrics.test.ts`, MODIFY `src/app.ts` | 依赖 Wave 1 的三个中间件 |
+| E     | `test(api): add metrics integration tests`  | `src/metrics.integration.test.ts`               | 依赖以上全部        |
 
 
 执行命令：
@@ -488,7 +490,14 @@ multi-agent-factory/
 │   └── pull_request_template.md
 │
 ├── git-hooks/pre-commit       ← Lint + Format + Typecheck
-├── src/                       ← Demo TODO API
+├── src/                       ← Demo API（/health, /ping, /version, /uptime）
+│   ├── index.ts               ← 入口（启动 HTTP 服务）
+│   ├── app.ts                 ← Express 路由注册
+│   ├── health.ts              ← GET /health 端点
+│   ├── ping.ts                ← GET /ping 端点
+│   ├── version.ts             ← GET /version 端点
+│   ├── uptime.ts              ← GET /uptime 端点
+│   └── *.test.ts              ← 各端点的单元测试
 ├── public/                    ← 静态页面
 ├── vitest.config.ts           ← 测试配置（70% 覆盖率）
 ├── tsconfig.json              ← TypeScript 严格模式
